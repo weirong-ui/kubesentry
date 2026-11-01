@@ -1,0 +1,25 @@
+apiVersion: apps.sentry.io/v1alpha1
+kind: App
+metadata:
+  name: sample
+  labels:
+    app.kubernetes.io/name: kubesentry
+spec:
+  image: nginx:1.27-alpine
+  replicas: 2
+  port: 80
+  scaling:
+    minReplicas: 1
+    maxReplicas: 10
+    cooldownSeconds: 120
+    metrics:
+      - type: QPS
+        target: "500"
+      - type: P99Latency
+        target: "200ms"
+  health:
+    strategy: graduated
+    canary:
+      enabled: false
+      observationSeconds: 300
+      errorRateThreshold: "0.01"

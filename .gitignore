@@ -1,0 +1,18 @@
+# Binaries
+bin/
+*.exe
+
+# Test
+coverage.out
+*.test
+
+# IDE
+.idea/
+.vscode/
+
+# Build artifacts
+/vendor/
+
+# Local env
+.env
+*.kubeconfig
