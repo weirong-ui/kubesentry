@@ -6,7 +6,29 @@ on:
   pull_request:
 
 jobs:
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check required docs exist
+        run: |
+          set -e
+          for f in README.md LICENSE docs/DESIGN.md docs/ROADMAP.md \
+                   juejin/00-系列文章规划.md config/samples/app_v1alpha1_app.yaml; do
+            test -f "$f" || { echo "missing: $f"; exit 1; }
+            echo "ok: $f"
+          done
+      - name: README image references must exist
+        run: |
+          set -e
+          grep -oE '\]\((docs/assets/[^)]+)\)' README.md | sed 's/](\(.*\))/\1/' | while read -r img; do
+            test -f "$img" || { echo "README 引用的图片不存在: $img"; exit 1; }
+            echo "ok: $img"
+          done
+
   lint:
+    # P0 脚手架（go.mod + 生成代码）落地后自动启用
+    if: ${{ hashFiles('go.mod') != '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,6 +42,7 @@ jobs:
           version: latest
 
   test:
+    if: ${{ hashFiles('go.mod') != '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -37,6 +60,7 @@ jobs:
           files: coverage.out
 
   e2e:
+    if: ${{ hashFiles('go.mod') != '' }}
     runs-on: ubuntu-latest
     needs: [lint, test]
     steps:
