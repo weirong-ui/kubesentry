@@ -248,4 +248,4 @@ kubectl scale deploy sample --replicas=10
 
 ---
 
-*系列目录：01 项目设计 ｜ **02 第一个 Reconcile（本篇）** ｜ 03 伸缩决策引擎 ｜ 04 分级自愈 ｜ 05 Admission Webhook ｜ 06 手写 mini-Informer*
+系列目录：01 项目设计 ｜ **02 第一个 Reconcile（本篇）** ｜ 03 伸缩决策引擎 ｜ 04 分级自愈 ｜ 05 Admission Webhook ｜ 06 手写 mini-Informer
