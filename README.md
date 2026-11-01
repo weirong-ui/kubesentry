@@ -1,5 +1,9 @@
 # KubeSentry — 云原生应用自愈与智能弹性伸缩 Operator
 
+<p align="center">
+  <img src="docs/assets/architecture.png" alt="KubeSentry 架构总览" width="880"/>
+</p>
+
 [![Go Version](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go)](https://go.dev)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.28%2B-326CE5?logo=kubernetes)](https://kubernetes.io)
 [![CI](https://github.com/weirong-ui/kubesentry/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
