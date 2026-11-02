@@ -12,7 +12,7 @@
 | `go build ./...` | ❌ | `pattern ./...: directory prefix . does not contain main module or its selected dependencies` |
 | `make test` | ❌ | 依赖 `manifests generate` + `go test`，因无 `go.mod` 第一步即失败 |
 | 单元测试 | ❌ | `*_test.go` 数量 = 0 |
-| CI 状态 | ⚠️ | `docs` job 可跑；`lint` / `test` / `e2e` 被 `if: hashFiles('go.mod') != ''` 门禁挡死，从未执行过 → **CI 绿灯不代表代码能编译** |
+| CI 状态 | ❌ | **整份 workflow 从未产生过任何 job**。run `41439643551` 显示 `conclusion=failure` 但 `jobs total_count=0`，`run_started_at == updated_at`（耗时 0 秒）——这是 YAML/表达式校验失败的典型特征，不是某条命令失败 |
 
 **根因（一个）**：仓库从未执行过 `kubebuilder init`，缺少 Go 模块与代码生成产物。
 
@@ -20,6 +20,30 @@
 缺失：go.mod、go.sum、api/v1alpha1/zz_generated.deepcopy.go、
       config/crd/bases/、config/rbac/、config/default/、
       pkg/miniinformer/、internal/webhook/、charts/kubesentry/
+```
+
+### 附带发现：CI 徽章从建立那天起就是红的
+
+`.github/workflows/ci.yml` 第 31、45、63 行把 `if: ${{ hashFiles('go.mod') != '' }}` 写在了 **job 级**。
+`hashFiles()` 只在 step 上下文可用，job 级无法求值 → 整份 workflow 判定为非法文件 → **连 `docs` job 都不会被创建**。
+所以仓库首页的 CI badge 不是"暂时失败"，而是从来就没跑过；把它当成"CI 已接入"写进简历是站不住的。
+
+修复方式（P0 一并做，不要只在本地改）：
+
+```yaml
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Gate
+        id: gate
+        run: |
+          if [ -f go.mod ]; then echo "ready=true" >> "$GITHUB_OUTPUT"
+          else echo "ready=false" >> "$GITHUB_OUTPUT"; echo "::notice::go.mod 缺失，跳过 Go 检查"; fi
+      - uses: actions/setup-go@v5
+        if: steps.gate.outputs.ready == 'true'
+        with: { go-version: "1.22", cache: true }
+      # 后续 lint / test 步骤同样加 if: steps.gate.outputs.ready == 'true'
 ```
 
 ## 二、三栏表：能力 / 真实状态 / 缺口
@@ -46,12 +70,13 @@
 | Admission Webhook | 🗓 规划中 | `internal/webhook/` **目录不存在**；`cmd/main.go` 未注册任何 webhook；无证书、无 `config/webhook/` |
 | mini-Informer | 🗓 规划中 | `pkg/miniinformer/` **目录不存在**；`Dockerfile` 的 `COPY pkg/ pkg/` 会因此构建失败（提前暴露了） |
 | Helm Chart | 🗓 规划中 | `charts/kubesentry/` 不存在，README 项目结构图里写了 |
+| CI 流水线 | ❌ 从未运行 | `.github/workflows/ci.yml:31,45,63` job 级 `if: hashFiles(...)` 非法 → 整份 workflow 校验失败，`docs` / `lint` / `test` / `e2e` / `image` **一个 job 都没创建过**，首页 badge 自建立起一直是红的 |
 | 单元 / envtest 测试 | 🗓 规划中 | 0 个 `_test.go`，`Makefile` 的 `test` 目标设计完整但跑不起来 |
 | 镜像构建 | 🚧 半成品 | `Dockerfile` 是标准 kubebuilder + distroless 多阶段（思路对），但 `COPY go.mod go.sum`、`COPY pkg/` 均指向不存在的文件 |
 | 文档资产 | ✅ 已实现 | `README` / `docs/DESIGN.md` / `docs/ROADMAP.md` / `docs/assets/architecture.png` / `juejin/` 4 篇规划与草稿齐备——**这是当前仓库最有价值的部分** |
 | `cmd/main.go` 可编译性 | ❌ 有 bug | `Metrics: ctrl.Options{}.Metrics` 是非法写法（controller-runtime v0.19 中该字段为 `metricsserver.Options`，不能自引用）；`Healer` 字段未注入，`r.Healer` 为 nil——当前靠"方法恰好不解引用 e"侥幸不 panic，一旦 `Inspect` 真正实现就会 nil panic |
 
-**统计**：23 项能力中 `✅ 2 项`（都只是纯逻辑函数）、`🚧 6 项`、`🗓/❌ 15 项`。
+**统计**：23 项能力中 `✅ 3 项`（Finalizer 时序、迟滞/缩容算法、文档资产）、`🚧 5 项`、`🗓 11 项`、`❌ 4 项`（3 个确凿缺陷 + CI 从未运行）。
 
 ## 三、这件事的严重性（写给未来的自己）
 
@@ -72,7 +97,7 @@
 6. [ ] 修 `Status.CurrentReplicas`：改读 `deploy.Status.ReadyReplicas`（或 `AvailableReplicas`），与 spec 分离
 7. [ ] 写 `Conditions`：`Ready`（Deployment 可用）/ `Progressing`，`meta.SetStatusCondition`
 8. [ ] `emitEvent` 接 `Recorder`，先只做 ScaleUp / ScaleDown 两个 reason，验证 `kubectl get events` 能查到
-9. [ ] 打开 CI：删掉 `lint`/`test` 的 `hashFiles('go.mod')` 门禁，用真实流水线卡住"README 超前于代码"
+9. [ ] 修 CI：把 job 级 `hashFiles` 改成 step 级 gate（见上文），push 后确认 workflow **真的创建出 job**——`docs` 能绿、其余显示 skipped 才算修好
 
 **验收**：`kubectl apply -f config/samples/app_v1alpha1_app.yaml` → `kubectl get deploy,svc -l app.kubernetes.io/managed-by=kubesentry` 有输出 → `kubectl get app sample -o jsonpath='{.status.phase}'` 输出 `Stable`。
 

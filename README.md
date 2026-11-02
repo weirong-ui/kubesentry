@@ -34,6 +34,7 @@
 | Admission Webhook | 🗓 规划中 | P3 |
 | 手写 mini-Informer | 🗓 规划中 | P4 |
 | 单元 / envtest 测试 | 🗓 规划中 | 当前 0 个用例 |
+| CI 流水线 | ❌ 未运行 | workflow 校验失败，从未创建出任何 job；徽章一直是红的 |
 | Helm Chart | 🗓 规划中 | 第 3 周 |
 
 ## 为什么做这个项目？
