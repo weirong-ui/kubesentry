@@ -38,9 +38,9 @@ import (
 type Level int
 
 const (
-	L1ScaleUp   Level = iota // 缓解流量型问题
-	L2Isolate                // 摘除不健康副本，切断坏实例流量
-	L3Rollback               // 回退到上一个健康版本
+	L1ScaleUp  Level = iota // 缓解流量型问题
+	L2Isolate               // 摘除不健康副本，切断坏实例流量
+	L3Rollback              // 回退到上一个健康版本
 )
 
 // Report 一次健康检查的结果.
@@ -74,6 +74,11 @@ func (a Action) Describe() string {
 // Engine 分级自愈引擎。Inspect 只读集群，Apply 才写.
 type Engine struct {
 	// promClient TODO(P2): 注入 Prometheus 查询客户端，用于错误率/P99 信号
+}
+
+// NewEngine 构造自愈引擎。P2 会把 Prometheus 客户端注入进来。
+func NewEngine() *Engine {
+	return &Engine{}
 }
 
 // Inspect 采集 Pod 状态与应用指标，识别故障模式：

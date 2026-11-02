@@ -2,12 +2,13 @@
 
 > 与大三下学期 + 秋招时间线对齐，每个里程碑都是一次简历更新点 + 一篇掘金文章素材。
 
-## P0 — MVP：让 Operator 转起来（3 周）
-- [ ] kubebuilder 初始化项目，App CRD 定义 + DeepCopy 生成
-- [ ] Reconcile 循环：App → Deployment/Service 的 CreateOrUpdate
-- [ ] Finalizer 处理删除逻辑
-- [ ] envtest 集成测试跑通第一个用例
-- [ ] GitHub Actions：golangci-lint + go test + 构建镜像
+## P0 — MVP：让 Operator 转起来（已完成 2026-11-02）
+- [x] Go 模块 + controller-gen 代码生成，App CRD / DeepCopy / RBAC 落地
+- [x] Reconcile 循环：App → Deployment/Service 的 CreateOrUpdate
+- [x] Status 反映真实就绪副本 + Available/Progressing Conditions + Events 留痕
+- [x] Finalizer 处理删除逻辑
+- [ ] envtest 集成测试跑通第一个用例（顺延到第 3 周）
+- [x] GitHub Actions：gofmt + go vet + go build + go test + kind e2e
 - 📦 产出：GitHub 仓库可运行、掘金文章《从零写一个 K8s Operator》
 
 ## P1 — 智能伸缩（3 周）

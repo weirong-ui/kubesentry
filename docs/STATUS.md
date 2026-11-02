@@ -1,108 +1,108 @@
 # KubeSentry 实现状态（真实账本）
 
 > 本文件是**唯一可信的能力清单**。README 的一切对外描述以此为准，每完成一项就把状态改掉。
-> 体检时间：2026-11-02 晚 ｜ 体检方式：`curl` 拉取 main 分支全量 → 逐文件对读 → `go build ./...`
-> 结论一句话：**当前仓库是「设计完整 + 骨架可读」的代码，不是可运行程序。P0 未完成。**
+> 最后更新：2026-11-02 深夜（P0 收尾完成）
+> 验收口径：代码能在干净集群上 `deploy → apply App → Available`，且有可复现的证据。
 
-## 一、体检结论
+## 一、当前结论
+
+**P0 已闭环**：一条干净链路跑通了 —— `kubectl apply CR → 自动创建 Deployment + Service → status 反映真实就绪副本 → 写 Events`。
+尚未实现的是 P1 之后的**智能**部分（Prometheus 多信号伸缩、自愈、Webhook、mini-Informer），它们仍在下方三栏表里标 🗓。
+
+## 二、体检与验证结果（2026-11-02 实测）
 
 | 检查项 | 结果 | 实测输出 |
 |---|---|---|
-| `git clone` | ✅ | 可克隆（Windows 下需 `git -c http.schannelCheckRevoke=false`，本机 schannel 吊销检查失败） |
-| `go build ./...` | ❌ | `pattern ./...: directory prefix . does not contain main module or its selected dependencies` |
-| `make test` | ❌ | 依赖 `manifests generate` + `go test`，因无 `go.mod` 第一步即失败 |
-| 单元测试 | ❌ | `*_test.go` 数量 = 0 |
-| CI 状态 | ❌ | **整份 workflow 从未产生过任何 job**。run `41439643551` 显示 `conclusion=failure` 但 `jobs total_count=0`，`run_started_at == updated_at`（耗时 0 秒）——这是 YAML/表达式校验失败的典型特征，不是某条命令失败 |
+| `go build ./...` | ✅ | 通过（Go 1.27.3 本机，module `go 1.22.0`；k8s v0.31.1 / controller-runtime v0.19.0） |
+| `go vet ./...` | ✅ | 无输出 |
+| `gofmt -l` | ✅ | 无未格式化文件 |
+| `go test ./...` | ⚠️ | 通过但**用例数为 0**，等于没有测试（第 3 周补） |
+| 部署链路 | ✅ | Docker Desktop k8s v1.36.1：`kubectl apply` CRD+RBAC+Manager → 控制器 Pod `1/1 Running` |
+| 创建资源 | ✅ | `deployment.apps/sample 2/2`、`service/sample ClusterIP 80/TCP`、`endpoints 10.244.0.9,10.244.0.10` |
+| 状态真实性 | ✅ | `NAME sample PHASE Stable READY 2 DESIRED 2`；`status.conditions` 出现 `Available=True / Progressing=False` |
+| Events | ✅ | `kubectl get events --field-selector reason=KubeSentryReconcile` → `app available: 2/2 replicas ready` |
+| 控制器日志 | ✅ | `ERROR` 计数 = 0 |
+| CI | ⏳ | workflow 已重写（step 级 gate + build/e2e/image），结果见本次推送的 Actions |
 
-**根因（一个）**：仓库从未执行过 `kubebuilder init`，缺少 Go 模块与代码生成产物。
+## 三、三栏表：能力 / 真实状态 / 证据与缺口
 
-```
-缺失：go.mod、go.sum、api/v1alpha1/zz_generated.deepcopy.go、
-      config/crd/bases/、config/rbac/、config/default/、
-      pkg/miniinformer/、internal/webhook/、charts/kubesentry/
-```
-
-### 附带发现：CI 徽章从建立那天起就是红的
-
-`.github/workflows/ci.yml` 第 31、45、63 行把 `if: ${{ hashFiles('go.mod') != '' }}` 写在了 **job 级**。
-`hashFiles()` 只在 step 上下文可用，job 级无法求值 → 整份 workflow 判定为非法文件 → **连 `docs` job 都不会被创建**。
-所以仓库首页的 CI badge 不是"暂时失败"，而是从来就没跑过；把它当成"CI 已接入"写进简历是站不住的。
-
-修复方式（P0 一并做，不要只在本地改）：
-
-```yaml
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Gate
-        id: gate
-        run: |
-          if [ -f go.mod ]; then echo "ready=true" >> "$GITHUB_OUTPUT"
-          else echo "ready=false" >> "$GITHUB_OUTPUT"; echo "::notice::go.mod 缺失，跳过 Go 检查"; fi
-      - uses: actions/setup-go@v5
-        if: steps.gate.outputs.ready == 'true'
-        with: { go-version: "1.22", cache: true }
-      # 后续 lint / test 步骤同样加 if: steps.gate.outputs.ready == 'true'
-```
-
-## 二、三栏表：能力 / 真实状态 / 缺口
-
-状态含义：`✅ 已实现`（有代码且有验证路径）｜`🚧 半成品`（有代码但链路断）｜`🗓 规划中`（只有注释/命名）
+状态含义：`✅ 已实现`（有代码且集群验证过）｜`🚧 半成品`（有代码但链路未验证/部分）｜`🗓 规划中`
 
 | 能力 | 真实状态 | 证据与缺口 |
 |---|---|---|
-| App CRD 类型定义 | 🚧 半成品 | `api/v1alpha1/app_types.go` 类型与 kubebuilder marker 写得完整（QPS/P99/ErrorRate、冷却、金丝雀字段齐全）。缺口：无 `zz_generated.deepcopy.go`、无 `config/crd/bases/*.yaml`，`kubectl apply -f config/crd/bases` 直接报路径不存在 |
-| 基础 Reconcile（App → Deployment） | 🚧 半成品 | `internal/controller/app_controller.go:162` `ensureDeployment` 用 `CreateOrUpdate`，字段对齐逻辑正确，`SetControllerReference` 已设 OwnerReference。缺口：编译不过（无 go.mod），未在集群验证 |
-| Service 创建 | 🗓 规划中 | README 架构图与快速开始承诺 "Deployment & Service"，代码里**只有 Deployment**，全仓无 `corev1.Service` 构造 |
-| Status conditions | 🚧 半成品 | 结构体有 `Conditions []metav1.Condition`，`patchStatus` 只写 `Phase` / `CurrentReplicas` / `LastHealAction`，**从不写 conditions** |
-| Status 真实副本数 | ❌ 有 bug | `app_controller.go:195` `CurrentReplicas = *app.Spec.Replicas`——读的是期望值不是 Deployment 实际状态，`kubectl get app` 显示的数字恒等于 spec，会误导 |
-| Kubernetes Events 审计 | 🗓 规划中 | `app_controller.go:205` `emitEvent` 是空函数（`// TODO(P0): r.Recorder.Event(...)`），`Recorder` 未注入。README 承诺的 `--field-selector reason=KubeSentryScaleUp` 查不到任何事件 |
-| Finalizer 删除时序 | ✅ 已实现 | `app_controller.go:90-108` 添加/移除逻辑正确，但删前导出审计是 TODO |
-| Prometheus 指标查询 | 🗓 规划中 | **全仓无 Prometheus client**，无 `prometheus.go`，`go.mod` 也不存在。`healer.Engine` 的 promClient 字段只是注释 |
-| 多信号伸缩决策 | ❌ 逻辑空转 | `internal/scaler/engine.go:82-87`：`signals[m.Type] = current`，即每个信号都等于当前副本数 → `desired == current` → **`Decide()` 永远返回 None，永不伸缩** |
-| 冷却窗口 | 🚧 半成品 | `inCooldown()` 算法正确，但 `Status.LastScalingAt` 全仓无写入点（`Apply` 是空实现）→ 冷却判断恒为 false，等于没有 |
-| 迟滞带 + 缩容渐进 | ✅ 已实现 | `engine.go:97-122` 纯函数逻辑完整，含"缩到 minReplicas 不受迟滞约束""`ceil(0.2×current)` 会缩不动"两个真实坑的处理。缺口：0 个单测（这正是 P1 要补的） |
-| Scaler 落地 | 🗓 规划中 | `engine.go:144` `Apply(...) error { return nil }`，签名用 `interface{}` 占位 → 决策不会写进 Deployment |
-| 故障识别（CrashLoop / OOM / 5xx） | 🗓 规划中 | `healer/engine.go:83` `Inspect` 直接 `return Report{Unhealthy: false}`，无 Pod List、无 `containerStatuses` 读取 |
-| 分级自愈 L1→L2→L3 | 🗓 规划中 | `healer/engine.go:105` `Apply` 返回 `nil, nil` |
-| 金丝雀观察 + 自动回滚 | 🗓 规划中 | `InCanaryWindow` 恒 `false`（`engine.go:95`）、`CheckCanary` 恒 `false`、`Rollback` 返回 `rollback: not implemented (P2)` |
-| Admission Webhook | 🗓 规划中 | `internal/webhook/` **目录不存在**；`cmd/main.go` 未注册任何 webhook；无证书、无 `config/webhook/` |
-| mini-Informer | 🗓 规划中 | `pkg/miniinformer/` **目录不存在**；`Dockerfile` 的 `COPY pkg/ pkg/` 会因此构建失败（提前暴露了） |
-| Helm Chart | 🗓 规划中 | `charts/kubesentry/` 不存在，README 项目结构图里写了 |
-| CI 流水线 | ❌ 从未运行 | `.github/workflows/ci.yml:31,45,63` job 级 `if: hashFiles(...)` 非法 → 整份 workflow 校验失败，`docs` / `lint` / `test` / `e2e` / `image` **一个 job 都没创建过**，首页 badge 自建立起一直是红的 |
-| 单元 / envtest 测试 | 🗓 规划中 | 0 个 `_test.go`，`Makefile` 的 `test` 目标设计完整但跑不起来 |
-| 镜像构建 | 🚧 半成品 | `Dockerfile` 是标准 kubebuilder + distroless 多阶段（思路对），但 `COPY go.mod go.sum`、`COPY pkg/` 均指向不存在的文件 |
-| 文档资产 | ✅ 已实现 | `README` / `docs/DESIGN.md` / `docs/ROADMAP.md` / `docs/assets/architecture.png` / `juejin/` 4 篇规划与草稿齐备——**这是当前仓库最有价值的部分** |
-| `cmd/main.go` 可编译性 | ❌ 有 bug | `Metrics: ctrl.Options{}.Metrics` 是非法写法（controller-runtime v0.19 中该字段为 `metricsserver.Options`，不能自引用）；`Healer` 字段未注入，`r.Healer` 为 nil——当前靠"方法恰好不解引用 e"侥幸不 panic，一旦 `Inspect` 真正实现就会 nil panic |
+| App CRD + 代码生成 | ✅ 已实现 | `config/crd/bases/apps.sentry.io_apps.yaml` 由 controller-gen v0.16.5 生成；`zz_generated.deepcopy.go` 已入库 |
+| Reconcile（App → Deployment） | ✅ 已实现 | `ensureDeployment` 幂等 CreateOrUpdate + `SetControllerReference`；集群验证 2/2 就绪 |
+| Service 自动创建 | ✅ 已实现 | `ensureService`（ClusterIP，port/targetPort 同源）；Endpoints 有 2 个后端 IP |
+| 托管资源标签 | ✅ 已实现 | Deployment/Service 均带 `app.kubernetes.io/managed-by=kubesentry`，README 的 `-l` 查询可直接用 |
+| Status 真实副本数 | ✅ 已实现 | `CurrentReplicas` 取自 `deploy.Status.ReadyReplicas`，`DesiredReplicas` 取自 spec，两者分离 |
+| Status Conditions | ✅ 已实现 | `Available` / `Progressing`，用 `meta.SetStatusCondition` 维护 `LastTransitionTime` 与去重 |
+| Kubernetes Events | ✅ 已实现 | `Recorder` 已注入；`KubeSentryScaleUp/Down/Heal/CanaryFailed/Error/Reconcile` 六类 reason；首次可用时发事件 |
+| Finalizer 删除时序 | ✅ 已实现 | 添加/移除正确；删前导出审计仍是 TODO(P2) |
+| 迟滞带 + 缩容渐进算法 | ✅ 已实现 | 纯函数逻辑完整（含"缩回 minReplicas 不受迟滞约束""`ceil(0.2×current)` 缩不动"两个坑） |
+| 冷却窗口 | 🚧 半成品 | `LastScalingAt` 现在会被写入（decision≠None 时）；但还没有指标源能触发决策，**端到端未验证** |
+| Prometheus 多信号伸缩 | 🚧 半成品 | 已定义 `MetricsSource` 接口并把 `Decide` 改成"无源则显式返回"，不再伪造信号；Prometheus 实现待 P1 |
+| 故障识别（CrashLoop / OOM / 5xx） | 🗓 规划中 | `Inspect` 仍返回 `Unhealthy:false`，P2 |
+| 分级自愈 L1→L2→L3 | 🗓 规划中 | `Apply` 仍返回 `nil,nil`，P2 |
+| 金丝雀观察 + 自动回滚 | 🗓 规划中 | `InCanaryWindow` / `CheckCanary` 恒 false，`Rollback` 返回 not implemented，P2 |
+| Admission Webhook | 🗓 规划中 | `internal/webhook/` 不存在，`cmd/main.go` 未注册，P3 |
+| mini-Informer | 🗓 规划中 | `pkg/miniinformer/` 不存在，P4（Dockerfile 已预留注释位） |
+| Helm Chart | 🗓 规划中 | `charts/` 不存在，第 3 周在 kustomize 之后再做 |
+| 单元 / envtest 测试 | 🗓 规划中 | 0 用例；CI 里 `go test` 目前是空跑 |
+| 压测与 HPA 对比表 | 🗓 规划中 | 第 3 周 |
 
-**统计**：23 项能力中 `✅ 3 项`（Finalizer 时序、迟滞/缩容算法、文档资产）、`🚧 5 项`、`🗓 11 项`、`❌ 4 项`（3 个确凿缺陷 + CI 从未运行）。
+## 四、11.02 夜这一轮改了什么（P0 收尾）
 
-## 三、这件事的严重性（写给未来的自己）
+**脚手架与构建**
 
-- 面试官 `git clone` 后第一条命令是 `go build ./...` → 立即失败 → 判定"包装"，比没有项目更差。
-- README 的对比表把"自愈""金丝雀回滚""Webhook"都打了 ✅ → 诱使面试官追问 → 一问"你的 CrashLoop 是怎么识别 waiting.reason 的"就穿帮。
-- 好消息：**骨架质量不差**。`scaler` 的两个坑（迟滞带要放行回落 min、`ceil` 缩容陷阱）是真踩过才写得出的，`healer` 的分级设计思路清楚。缺的是"接线"，不是"想法"。
-- 因此 11 月的策略从"写新功能"改为"把已有的接上、跑通、录下来"。
+1. 建立 `go.mod` / `go.sum`（k8s.io/api|apimachinery|client-go v0.31.1，controller-runtime v0.19.0）
+2. 补 `api/v1alpha1/groupversion_info.go`（GVK/Scheme 注册）与 `zz_generated.deepcopy.go`
+3. 生成 `config/crd/bases/`、`config/rbac/role.yaml`；手写 `config/manager/manager.yaml`（含 Namespace、非 root、只读根文件系统、探针）、`config/default/kustomization.yaml`
+4. `make deploy` 改为 `kubectl kustomize config/default | sed 's|IMG_PLACEHOLDER|$(IMG)|' | kubectl apply -f -`，不依赖外部 kustomize 二进制
+5. `Makefile` 的 controller-gen 调用改为显式包路径（`./...` 在 Go 1.22+ 下对 v0.16.5 会报 `no Go files`）
+6. `Dockerfile`：删掉指向不存在目录的 `COPY pkg/`，`# syntax` 指令置顶，新增 `GOPROXY` / `RUNTIME_IMAGE` 两个 build-arg（国内可达性）
+7. 全仓统一 LF 行尾 + `.gitattributes`（原先 CRLF 导致 `gofmt -l` 永远报脏）
 
-## 四、P0 收尾清单（11.03–11.04，严格按顺序）
+**控制器代码**
 
-前 4 条是取消红线的**前置条件**，不做完不要碰任何业务代码。
+8. `cmd/main.go`：修掉非法的 `Metrics: ctrl.Options{}.Metrics`（改 `metricsserver.Options`）；注入 `Healer`、`Recorder`（原先 `r.Healer` 是 nil，只是碰巧没 panic）
+9. 新增 `ensureService`，并把 `Owns(&corev1.Service{})` 加入 `SetupWithManager`
+10. `updateStatus` 用 Deployment 真实状态回写，补 `DesiredReplicas` / `ObservedGeneration`；新增 `Available` / `Progressing` Conditions
+11. `emitEvent` 接 `Recorder`；首次 `Available=True` 时发 `KubeSentryReconcile` 事件
+12. `scaler.Apply` 去掉 `interface{}` 占位，改为**声明式回写 `spec.replicas`**（不直接改 Deployment，避免与 `ensureDeployment` 打架）
+13. `scaler.Decide` 在无指标源时明确返回 `no metrics source configured (P1)`，不再用"当前副本数"冒充信号
 
-1. [ ] `kubebuilder init --domain sentry.io --repo github.com/weirong-ui/kubesentry` → 产出 `go.mod` / `Makefile` / `config/{default,manager,rbac}`；再用现有文件覆盖，标记以现有版本为准
-2. [ ] `kubebuilder create api --group apps --version v1alpha1 --kind App --resource --controller` → 产出 `zz_generated.deepcopy.go`（此文件必须进版本库）
-3. [ ] `make manifests generate` → 产出 `config/crd/bases/apps.sentry.io_apps.yaml`；`kubectl apply` 成功
-4. [ ] 修 `cmd/main.go`：`Metrics` 改为 `metricsserver.Options{BindAddress: metricsAddr}`；注入 `Healer: healer.NewEngine()`；`Recorder: mgr.GetEventRecorderFor("kubesentry")`
-5. [ ] 补 Service 创建（`ensureService`，ClusterIP + 端口映射 `spec.port`），或把 README 架构图里的 "& Service" 删掉——**二选一，不要留空承诺**
-6. [ ] 修 `Status.CurrentReplicas`：改读 `deploy.Status.ReadyReplicas`（或 `AvailableReplicas`），与 spec 分离
-7. [ ] 写 `Conditions`：`Ready`（Deployment 可用）/ `Progressing`，`meta.SetStatusCondition`
-8. [ ] `emitEvent` 接 `Recorder`，先只做 ScaleUp / ScaleDown 两个 reason，验证 `kubectl get events` 能查到
-9. [ ] 修 CI：把 job 级 `hashFiles` 改成 step 级 gate（见上文），push 后确认 workflow **真的创建出 job**——`docs` 能绿、其余显示 skipped 才算修好
+**发现的原有缺陷（已修）**
 
-**验收**：`kubectl apply -f config/samples/app_v1alpha1_app.yaml` → `kubectl get deploy,svc -l app.kubernetes.io/managed-by=kubesentry` 有输出 → `kubectl get app sample -o jsonpath='{.status.phase}'` 输出 `Stable`。
+14. `+kubebuilder:default={}` 打在 `Scaling` / `Health` / `Canary` 结构体上会生成非法 CRD（`default: {}` 缺少必填子字段），导致 `kubectl apply` CRD 直接被拒 —— 改为字段级 default + `+optional`
+15. `status.currentReplicas` 若设为 required，值为 0 时 merge patch 不带该字段会报 `Required value` —— 保持 optional
 
-## 五、之后的每日勾选
+**CI**
+
+16. 重写 `.github/workflows/ci.yml`：条件判断从 job 级 `if` 移到 step 级（原写法使整份 workflow 校验失败，一个 job 都没创建过）；新增 `build`（gofmt/vet/build/test）与真实 `e2e`（kind + 构建镜像 + `make deploy` + `kubectl wait --for=condition=Available` + 校验 events）
+
+## 五、环境备忘（下次别再踩）
+
+| 现象 | 处理 |
+|---|---|
+| `git clone` 报 `CRYPT_E_NO_REVOCATION_CHECK` | `GIT_SSL_NO_VERIFY=1 git clone ...`；curl 加 `--ssl-no-revoke` |
+| `proxy.golang.org` 连接被重置/502 | `go env -w GOPROXY=https://goproxy.cn,direct` |
+| `docker build` 拉不到 `gcr.io/distroless/*` | `--build-arg RUNTIME_IMAGE=m.daocloud.io/gcr.io/distroless/static-debian12:nonroot` |
+| `docker build` 内 `go mod download` 卡住 | `--build-arg GOPROXY=https://goproxy.cn,direct` |
+| 本机没有 `make` | 直接跑 Makefile 里的等价命令；CI（Linux）里 `make` 正常 |
+| 同 tag 重新构建后集群仍跑旧镜像 | 换 tag（`e2e2`/`e2e3`）或 `imagePullPolicy: Always`；containerd 会缓存同名 tag |
+| Docker Desktop 集群拉 `nginx:1.27-alpine` 报 registry-mirror 500 | 先在本机 `docker pull` 预热镜像，再让集群重试 |
+
+## 六、下一步（11.03 起）
+
+1. **P1 指标源**：实现 `scaler.PrometheusSource`（`rate(http_requests_total[5m])`、`histogram_quantile(0.99, ...)`、`rate(...{code=~"5.."}[5m])/rate(...)`），注入 `NewEngine()`
+2. **P1 端到端**：kind 里装 kube-prometheus-stack + hey 打流，观察副本上升，并验证"冷却窗口内不缩容"
+3. **单测**：给 `Decide` 的迟滞/冷却/渐进缩容写表驱动用例（≥5 个），把覆盖率写进 README badge
+4. **P2 自愈**：`Inspect` 读 `containerStatuses[].state.waiting.reason == CrashLoopBackOff` 与 `lastState.terminated.reason == OOMKilled`
+5. **第 3 周**：envtest、Helm Chart、压测对比表
+
+## 七、每日勾选
 
 | 完成日 | 事项 | 状态变化 |
 |---|---|---|
-| 2026-11-02 | 体检 + 本文件 + README「实现状态」段 | 建立基线（本次） |
+| 2026-11-02 | 体检 + STATUS/README 账本 | 建立基线，暴露红线 |
+| 2026-11-02 夜 | P0 收尾（脚手架、Service、Status/Conditions、Events、CI） | 链路跑通：CR → Deploy+Service → Available |

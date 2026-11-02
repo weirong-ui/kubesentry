@@ -6,7 +6,7 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go)](https://go.dev)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.28%2B-326CE5?logo=kubernetes)](https://kubernetes.io)
-[![CI](https://github.com/weirong-ui/kubesentry/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
+[![CI](https://github.com/weirong-ui/kubesentry/actions/workflows/ci.yml/badge.svg)](https://github.com/weirong-ui/kubesentry/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
 > 一个基于 controller-runtime 的 Kubernetes Operator：不只让应用"活着"，还能让它**自己变强、自己疗伤**。
@@ -14,27 +14,28 @@
 
 ## 实现状态
 
-> **当前仓库处于 P0 开发期：设计文档与代码骨架完整，尚未产出可运行版本。**
-> 逐条能力清单与缺口见 [docs/STATUS.md](docs/STATUS.md)，最近更新：2026-11-02。
-> 下方所有"核心特性"均为**目标能力**，不代表已可用；请以本表为准。
+> **P0 已闭环**：`kubectl apply` 一个 `App` CR，会自动创建 Deployment + Service，`status` 反映真实就绪副本并写出 Events。
+> 逐条能力清单、验证证据与环境备忘见 [docs/STATUS.md](docs/STATUS.md)，最近更新：2026-11-02。
+> 下方"核心特性"中带 🗓 的部分仍是目标能力，不代表已可用。
 
 | 能力 | 状态 | 说明 |
 |---|---|---|
-| App CRD 类型定义 | ✅ 已实现 | 多信号 / 冷却 / 金丝雀字段完整 |
-| Reconcile 管理 Deployment | 🚧 开发中 | 逻辑已写，缺 Go 模块与代码生成，暂不能编译 |
-| Finalizer 删除时序 | ✅ 已实现 | 添加/移除正确，删前审计待补 |
-| 迟滞带 + 缩容渐进算法 | ✅ 已实现 | 纯函数，单测待补（P1） |
-| Status Conditions | 🚧 开发中 | 字段已定义，尚未写入 |
-| Kubernetes Events 审计 | 🚧 开发中 | `emitEvent` 待接 `EventRecorder` |
-| Service 自动创建 | 🗓 规划中 | P0 |
-| Prometheus 多信号伸缩 | 🗓 规划中 | P1；当前 `Decide()` 信号恒等于当前副本数，不会触发伸缩 |
+| App CRD + 代码生成 | ✅ 已实现 | controller-gen 生成 CRD / DeepCopy / RBAC |
+| Reconcile 管理 Deployment | ✅ 已实现 | 幂等 CreateOrUpdate + OwnerReference |
+| Service 自动创建 | ✅ 已实现 | ClusterIP，Endpoints 正常挂载后端 |
+| Status 真实副本数 | ✅ 已实现 | 取自 `Deployment.status.readyReplicas`，与 spec 分离 |
+| Status Conditions | ✅ 已实现 | `Available` / `Progressing` |
+| Kubernetes Events 审计 | ✅ 已实现 | 已接入 `EventRecorder`，六类 reason |
+| Finalizer 删除时序 | ✅ 已实现 | 删前导出审计待 P2 |
+| 迟滞带 + 缩容渐进算法 | ✅ 已实现 | 纯函数，单测待补 |
+| Prometheus 多信号伸缩 | 🚧 开发中 | 决策骨架就绪，指标源待 P1 接入 |
+| 冷却窗口 | 🚧 开发中 | 时间戳已落库，端到端待 P1 验证 |
 | 故障识别（CrashLoop / OOM / 5xx） | 🗓 规划中 | P2 |
 | 分级自愈（扩容→降级→回滚） | 🗓 规划中 | P2 |
 | 金丝雀观察 + 自动回滚 | 🗓 规划中 | P2 |
 | Admission Webhook | 🗓 规划中 | P3 |
 | 手写 mini-Informer | 🗓 规划中 | P4 |
-| 单元 / envtest 测试 | 🗓 规划中 | 当前 0 个用例 |
-| CI 流水线 | ❌ 未运行 | workflow 校验失败，从未创建出任何 job；徽章一直是红的 |
+| 单元 / envtest 测试 | 🗓 规划中 | 第 3 周 |
 | Helm Chart | 🗓 规划中 | 第 3 周 |
 
 ## 为什么做这个项目？
@@ -80,22 +81,39 @@ flowchart LR
 
 ## 快速开始
 
-> ⚠️ **暂不可用**：以下步骤依赖 `config/crd/bases` 与 `config/default`，二者随 P0 脚手架一并落地。
-> 在那之前请勿按此操作，克隆后 `go build ./...` 会失败。进度见 [docs/STATUS.md](docs/STATUS.md)。
+需要 Kubernetes 1.28+ 与本地可用的镜像仓库（kind / minikube / Docker Desktop 均可）。
 
 ```bash
-# 1. 安装 CRD
-kubectl apply -f config/crd/bases
+# 1. 构建镜像（国内网络追加注释里的 build-arg）
+docker build -t kubesentry:dev .
+#   --build-arg GOPROXY=https://goproxy.cn,direct \
+#   --build-arg RUNTIME_IMAGE=m.daocloud.io/gcr.io/distroless/static-debian12:nonroot
 
-# 2. 部署 Operator（含 RBAC 与 Webhook）
-make deploy IMG=<your-registry>/kubesentry:latest
+# 2. 部署 CRD + RBAC + Manager
+make deploy IMG=kubesentry:dev
+# 没有 make 的机器（如 Windows）用等价命令：
+#   kubectl kustomize config/default | sed 's|IMG_PLACEHOLDER|kubesentry:dev|g' | kubectl apply -f -
 
 # 3. 创建一个受管应用
 kubectl apply -f config/samples/app_v1alpha1_app.yaml
 
 # 4. 观察 KubeSentry 的决策过程
-kubectl get app myapp -w
-kubectl get events --field-selector reason=KubeSentryScaleUp
+kubectl get app sample -w
+kubectl get deploy,svc -l app.kubernetes.io/managed-by=kubesentry
+kubectl get events --field-selector reason=KubeSentryReconcile
+```
+
+预期输出：
+
+```
+NAME     PHASE    READY   DESIRED   IMAGE
+sample   Stable   2       2         nginx:1.27-alpine
+
+NAME                     READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/sample   2/2     2            2           40s
+
+NAME             TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)   AGE
+service/sample   ClusterIP   10.96.237.92   <none>        80/TCP    40s
 ```
 
 一个最小的 `App` CR：
@@ -108,7 +126,8 @@ metadata:
 spec:
   image: registry.example.com/order-service:v1.2.0
   replicas: 3
-  scaling:
+  port: 8080
+  scaling:                        # 可选，省略即不做伸缩决策
     minReplicas: 2
     maxReplicas: 20
     cooldownSeconds: 120          # 冷却窗口，防震荡
@@ -117,7 +136,7 @@ spec:
         target: "1000"            # 每 Pod 目标 QPS（字符串，与 CRD 定义一致）
       - type: P99Latency
         target: "200ms"
-  health:
+  health:                         # 可选
     strategy: graduated           # graduated: 扩容→降级→回滚 分级自愈
     canary:
       enabled: true
@@ -131,56 +150,59 @@ spec:
 
 ```
 kubesentry/
-├── api/v1alpha1/          # App CRD 类型定义
+├── api/v1alpha1/          # App CRD 类型定义 + DeepCopy
 ├── cmd/                   # 入口：manager（webhook 待 P3 并入）
 ├── internal/
-│   ├── controller/        # 核心调和循环
-│   ├── scaler/            # 伸缩决策引擎（决策与执行分离）
+│   ├── controller/        # 核心调和循环（Deployment/Service/Status/Events）
+│   ├── scaler/            # 伸缩决策引擎（决策与执行分离，MetricsSource 由 P1 注入）
 │   ├── healer/            # 自愈引擎（骨架）
 │   └── webhook/ *         # Admission Webhook（P3）
 ├── pkg/miniinformer/ *    # 手写 Informer（P4）
 ├── config/
-│   ├── samples/           # 示例 App CR
-│   ├── crd/ *             # controller-gen 生成（P0）
-│   ├── rbac/ *            # （P0）
-│   └── default/ *         # kustomize 入口（P0）
+│   ├── crd/bases/         # controller-gen 生成的 CRD
+│   ├── rbac/              # ClusterRole / Binding / ServiceAccount
+│   ├── manager/           # Manager Deployment
+│   ├── default/           # kustomize 入口（make deploy 用）
+│   └── samples/           # 示例 App CR
 ├── charts/kubesentry/ *   # Helm Chart（第 3 周）
+├── hack/                  # boilerplate 等代码生成辅助
 └── docs/                  # 设计文档、状态账本、系列文章素材
 ```
 
 ## 开发
 
-> 当前 `make test` / `make run` 均不可用（缺 `go.mod`），P0 完成后恢复。
-
 ```bash
 # 本地运行（连当前 kubeconfig 集群）
 make run
 
-# 单元测试（envtest 起 etcd + apiserver）
-make test
-
-# 生成 CRD / DeepCopy 代码
+# 生成 CRD / RBAC / DeepCopy
 make manifests generate
+
+# 格式化与静态检查
+gofmt -l ./api ./cmd ./internal && go vet ./...
+
+# 单元测试
+go test ./... -cover
 
 # 构建镜像（多阶段 + distroless）
 make docker-build IMG=kubesentry:dev
 ```
 
+> Windows 上没有 `make` 时，直接执行 Makefile 里对应目标的命令即可（`make manifests` 等价于 `go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.16.5 ...`）。
+
 ## Roadmap
 
-> 勾选 = 代码已合并**且**可在 kind 集群复现。只有文档/骨架的阶段一律不勾。
+> 勾选 = 代码已合并**且**可在干净集群复现。只有文档/骨架的阶段一律不勾。
 
-- [ ] **P0**：Go 模块 + 代码生成 + App CRD + Reconcile 管理 Deployment/Service + Events
-- [ ] **P1**：Prometheus 多信号伸缩 + 冷却/迟滞算法落地（算法本身已实现，待接指标源）
+- [x] **P0**：Go 模块 + 代码生成 + App CRD + Reconcile 管理 Deployment/Service + Status/Conditions + Events
+- [ ] **P1**：Prometheus 多信号伸缩（`MetricsSource` 实现）+ 冷却/迟滞端到端验证
 - [ ] **P2**：故障自愈引擎 + 金丝雀自动回滚
 - [ ] **P3**：Admission Webhook（校验 + 安全默认值注入）
 - [ ] **P4**：手写 mini-Informer + 原理系列文章
 - [ ] **P5**：基于 eBPF 的无侵入指标采集
 - [ ] **P6**：多集群容灾调度
 
-已完成的基础件：App CRD 类型定义、Finalizer 时序、迟滞/缩容渐进算法、文档与文章素材 —— 详见 [docs/STATUS.md](docs/STATUS.md)。
-
-里程碑细节见 [docs/ROADMAP.md](docs/ROADMAP.md)。
+逐条进度与证据见 [docs/STATUS.md](docs/STATUS.md)，里程碑细节见 [docs/ROADMAP.md](docs/ROADMAP.md)。
 
 ## License
 

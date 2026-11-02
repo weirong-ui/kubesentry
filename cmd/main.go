@@ -30,9 +30,11 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	appsv1alpha1 "github.com/weirong-ui/kubesentry/api/v1alpha1"
 	"github.com/weirong-ui/kubesentry/internal/controller"
+	"github.com/weirong-ui/kubesentry/internal/healer"
 	"github.com/weirong-ui/kubesentry/internal/scaler"
 	// +kubebuilder:scaffold:imports
 )
@@ -66,7 +68,7 @@ func main() {
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		HealthProbeBindAddress: probeAddr,
-		Metrics:                ctrl.Options{}.Metrics, // 占位：P1 接入自定义伸缩指标
+		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "kubesentry.sentry.io",
 	})
@@ -78,8 +80,10 @@ func main() {
 	if err := (&controller.AppReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
-		Scaler: scaler.NewEngine(),
-		// Healer: healer.NewEngine(promClient),
+		// Scaler 暂未注入指标源（P1 接 Prometheus），此时 Decide 会明确返回"无指标源"
+		Scaler:   scaler.NewEngine(),
+		Healer:   healer.NewEngine(),
+		Recorder: mgr.GetEventRecorderFor("kubesentry"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "App")
 		os.Exit(1)

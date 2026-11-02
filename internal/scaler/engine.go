@@ -24,9 +24,12 @@ limitations under the License.
 package scaler
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"time"
+
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	appsv1alpha1 "github.com/weirong-ui/kubesentry/api/v1alpha1"
 )
@@ -53,19 +56,34 @@ func (d Decision) Describe() string {
 	return fmt.Sprintf("%s: %d -> %d (%s)", d.Action, d.FromReplicas, d.ToReplicas, d.Reason)
 }
 
+// MetricsSource 指标来源（P1 由 Prometheus Query API 实现）。
+// 未注入时 Decide 会明确返回"无指标源"，而不是拿当前副本数冒充信号——
+// 后者会让伸缩"看起来在工作"，实际永远不触发，是最难查的一类 bug。
+type MetricsSource interface {
+	// DesiredReplicas 返回该指标下应存在的副本数；无数据时 ok=false。
+	DesiredReplicas(target appsv1alpha1.MetricTarget, current int32) (replicas int32, ok bool)
+}
+
 // Engine 伸缩决策引擎。只做"决策"，不碰集群——这样 Decision 可以纯函数级单元测试.
 type Engine struct {
 	// nowFunc 注入时钟，测试时可控制时间推进冷却窗口
 	nowFunc func() time.Time
+	// source 指标来源，P1 接入 Prometheus
+	source MetricsSource
 }
 
 func NewEngine() *Engine {
 	return &Engine{nowFunc: time.Now}
 }
 
+// WithMetricsSource 注入指标来源（P1）。未注入时伸缩能力保持休眠。
+func (e *Engine) WithMetricsSource(src MetricsSource) *Engine {
+	e.source = src
+	return e
+}
+
 // Decide 根据冷却窗口与迟滞规则判断是否伸缩。
-// 注意：指标查询（Prometheus）由 healer/scaler 的上层调用方注入，
-// 本方法保持纯决策逻辑以便测试；实际指标通过 signals 传入。
+// 注意：指标查询（Prometheus）由上层注入，本方法只负责决策，便于纯逻辑单测。
 func (e *Engine) Decide(app *appsv1alpha1.App, nowFn func() time.Time) Decision {
 	e.nowFunc = nowFn
 	current := int32(1)
@@ -77,12 +95,20 @@ func (e *Engine) Decide(app *appsv1alpha1.App, nowFn func() time.Time) Decision 
 	signals := make(map[appsv1alpha1.MetricType]int32, len(policy.Metrics))
 	var desired int32 = policy.MinReplicas
 
-	// TODO(P1): 接入 Prometheus 查询后，此处遍历 policy.Metrics，
-	// 按各信号计算 desired 并取 max。当前骨架先以 current 为基准。
+	if e.source == nil {
+		return Decision{Action: ActionNone, FromReplicas: current, ToReplicas: current,
+			Reason: "no metrics source configured (P1)", Signals: signals}
+	}
+
+	// 多信号取最紧急者
 	for _, m := range policy.Metrics {
-		signals[m.Type] = current
-		if signals[m.Type] > desired {
-			desired = signals[m.Type]
+		want, ok := e.source.DesiredReplicas(m, current)
+		if !ok {
+			continue // 该信号暂时没有数据，跳过而不是当成 0
+		}
+		signals[m.Type] = want
+		if want > desired {
+			desired = want
 		}
 	}
 
@@ -139,8 +165,20 @@ func (e *Engine) inCooldown(app *appsv1alpha1.App) bool {
 	return e.nowFunc().Sub(app.Status.LastScalingAt.Time) < cooldown
 }
 
-// Apply 将决策落到 Deployment 并回写 Status.LastScalingAt.
-// TODO(P1): 实现真实写路径 + 失败重试语义.
-func (e *Engine) Apply(_ interface{}, _ interface{}, _ *appsv1alpha1.App, _ interface{}, _ Decision) error {
+// Apply 把决策落回 CR：改 spec.replicas，让 Reconcile 自然收敛到 Deployment。
+// 不直接改 Deployment —— 那样会和 ensureDeployment 打架（下一轮又被 spec 覆盖）。
+// 这是声明式的关键：控制器只维护"期望状态"，实际副本数交给 Deployment 控制器。
+func (e *Engine) Apply(ctx context.Context, c client.Client, app *appsv1alpha1.App, d Decision) error {
+	if d.Action == ActionNone {
+		return nil
+	}
+	if d.ToReplicas == d.FromReplicas {
+		return nil
+	}
+	target := d.ToReplicas
+	app.Spec.Replicas = &target
+	if err := c.Update(ctx, app); err != nil {
+		return fmt.Errorf("write back replicas %d->%d: %w", d.FromReplicas, target, err)
+	}
 	return nil
 }

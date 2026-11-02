@@ -5,15 +5,19 @@ on:
     branches: [main]
   pull_request:
 
+env:
+  GO_VERSION_FILE: go.mod
+
 jobs:
   docs:
+    name: docs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Check required docs exist
         run: |
           set -e
-          for f in README.md LICENSE docs/DESIGN.md docs/ROADMAP.md \
+          for f in README.md LICENSE docs/DESIGN.md docs/ROADMAP.md docs/STATUS.md \
                    juejin/00-系列文章规划.md config/samples/app_v1alpha1_app.yaml; do
             test -f "$f" || { echo "missing: $f"; exit 1; }
             echo "ok: $f"
@@ -26,33 +30,32 @@ jobs:
             echo "ok: $img"
           done
 
-  lint:
-    # P0 脚手架（go.mod + 生成代码）落地后自动启用
-    if: ${{ hashFiles('go.mod') != '' }}
+  # 校验代码可编译、可格式、可测试。
+  # 注意：条件判断必须写在 step 级——写在 job 级 if 里的非法表达式会让整份 workflow 校验失败，
+  # 连 job 都不会被创建（历史教训：本仓库 badge 曾因此红了整个建仓期）。
+  build:
+    name: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version-file: ${{ env.GO_VERSION_FILE }}
           cache: true
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-
-  test:
-    if: ${{ hashFiles('go.mod') != '' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.22"
-          cache: true
-      - name: Run unit & envtest tests
+      - name: gofmt
         run: |
-          go test ./... -coverprofile=coverage.out -covermode=atomic
+          unformatted=$(gofmt -l ./api ./cmd ./internal)
+          if [ -n "$unformatted" ]; then
+            echo "以下文件未格式化，请运行 gofmt -w："
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
+      - name: go build
+        run: go build ./...
+      - name: go test
+        run: go test ./... -coverprofile=coverage.out -covermode=atomic
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         continue-on-error: true
@@ -60,29 +63,52 @@ jobs:
           files: coverage.out
 
   e2e:
-    if: ${{ hashFiles('go.mod') != '' }}
+    name: e2e
     runs-on: ubuntu-latest
-    needs: [lint, test]
+    needs: [build]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
       - name: Create kind cluster
         uses: helm/kind-action@v1
-      - name: Install CRDs and deploy
+        with:
+          cluster_name: kind
+      - name: Build image
+        run: docker build -t kubesentry:e2e .
+      - name: Load image into kind
+        run: kind load docker-image kubesentry:e2e --name kind
+      - name: Deploy operator
+        run: make deploy IMG=kubesentry:e2e
+      - name: Wait for controller manager
+        run: kubectl -n kubesentry-system rollout status deploy/kubesentry-controller-manager --timeout=180s
+      - name: Apply sample App
+        run: kubectl apply -f config/samples/
+      - name: Assert App becomes Available
         run: |
-          kubectl apply -f config/crd/bases
-          kubectl apply -f config/samples/
-      - name: Verify sample App reconciles
+          set -e
+          kubectl wait --for=condition=Available app/sample --timeout=240s
+          kubectl get app sample -o wide
+          kubectl get deploy,svc -l app.kubernetes.io/managed-by=kubesentry
+          echo "--- status ---"
+          kubectl get app sample -o jsonpath='{.status}'
+          echo
+      - name: Events must be recorded
+        run: kubectl get events --field-selector reason=KubeSentryReconcile
+      - name: Dump diagnostics on failure
+        if: failure()
         run: |
-          kubectl wait --for=condition=Ready app/sample --timeout=120s || true
-          kubectl get deploy -l app.kubernetes.io/managed-by=kubesentry
+          kubectl -n kubesentry-system logs deploy/kubesentry-controller-manager --tail=100
+          kubectl describe app sample
+          kubectl get events --sort-by=.lastTimestamp | tail -30
 
   image:
+    name: image
     runs-on: ubuntu-latest
     needs: [e2e]
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     permissions:
       contents: read
       packages: write
@@ -101,4 +127,6 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/${{ github.repository }}:${{ github.sha }}
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
+            ghcr.io/${{ github.repository }}:latest

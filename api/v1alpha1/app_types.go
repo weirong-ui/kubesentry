@@ -39,7 +39,7 @@ const (
 type HealthStrategy string
 
 const (
-	StrategyGraduated         HealthStrategy = "graduated"           // 分级自愈：扩容→降级→回滚
+	StrategyGraduated         HealthStrategy = "graduated"          // 分级自愈：扩容→降级→回滚
 	StrategyObservabilityOnly HealthStrategy = "observability-only" // 只告警不动作
 )
 
@@ -70,9 +70,11 @@ type MetricTarget struct {
 // ScalingPolicy 伸缩策略：多信号 + 冷却窗口 + 迟滞带.
 type ScalingPolicy struct {
 	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=1
 	MinReplicas int32 `json:"minReplicas"`
 
 	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=3
 	MaxReplicas int32 `json:"maxReplicas"`
 
 	// CooldownSeconds 冷却窗口：窗口内的缩容请求一律拒绝（扩容可紧急放行）.
@@ -81,13 +83,16 @@ type ScalingPolicy struct {
 	CooldownSeconds int `json:"cooldownSeconds"`
 
 	// Metrics 伸缩信号列表，决策时取各信号计算结果的最大值.
+	// 可省略：未配置指标时伸缩引擎保持休眠（P1 接入 Prometheus 后才有意义）.
+	// +optional
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=5
-	Metrics []MetricTarget `json:"metrics"`
+	Metrics []MetricTarget `json:"metrics,omitempty"`
 }
 
 // CanaryPolicy 金丝雀发布观察策略.
 type CanaryPolicy struct {
+	// +kubebuilder:default=false
 	Enabled bool `json:"enabled"`
 
 	// ObservationSeconds 新版本发布后的观察窗口时长.
@@ -105,8 +110,8 @@ type HealthPolicy struct {
 	// +kubebuilder:default=graduated
 	Strategy HealthStrategy `json:"strategy"`
 
-	// +kubebuilder:default={}
-	Canary CanaryPolicy `json:"canary"`
+	// +optional
+	Canary CanaryPolicy `json:"canary,omitempty"`
 }
 
 // AppSpec defines the desired state of App.
@@ -124,11 +129,13 @@ type AppSpec struct {
 	// +kubebuilder:default=8080
 	Port int32 `json:"port"`
 
-	// +kubebuilder:default={}
-	Scaling ScalingPolicy `json:"scaling"`
+	// Scaling 伸缩策略。可省略：省略时不做伸缩决策.
+	// +optional
+	Scaling ScalingPolicy `json:"scaling,omitempty"`
 
-	// +kubebuilder:default={}
-	Health HealthPolicy `json:"health"`
+	// Health 健康与自愈策略。可省略：省略时使用零值（不分级自愈）.
+	// +optional
+	Health HealthPolicy `json:"health,omitempty"`
 }
 
 // AppStatus defines the observed state of App.
@@ -137,7 +144,18 @@ type AppStatus struct {
 	// +kubebuilder:default=Provisioning
 	Phase AppPhase `json:"phase"`
 
-	CurrentReplicas int32 `json:"currentReplicas"`
+	// ObservedGeneration 本状态对应的 spec 版本，用于判断状态是否已过期.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// CurrentReplicas **就绪副本数**，取自 Deployment.status.readyReplicas。
+	// 注意：这是观测值，不是 spec.replicas；两者不一致时才说明还在收敛。
+	// +optional
+	CurrentReplicas int32 `json:"currentReplicas,omitempty"`
+
+	// DesiredReplicas spec 声明的期望副本数，方便与 CurrentReplicas 对比排障.
+	// +optional
+	DesiredReplicas int32 `json:"desiredReplicas,omitempty"`
 
 	// LastScalingAt 上一次伸缩动作时间，冷却窗口的判断依据.
 	// +optional
@@ -159,7 +177,8 @@ type AppStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced,shortName=app
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
-// +kubebuilder:printcolumn:name="Replicas",type=integer,JSONPath=`.status.currentReplicas`
+// +kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.currentReplicas`
+// +kubebuilder:printcolumn:name="Desired",type=integer,JSONPath=`.status.desiredReplicas`
 // +kubebuilder:printcolumn:name="Image",type=string,JSONPath=`.spec.image`
 
 // App is the Schema for the apps API.
