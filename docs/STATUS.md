@@ -22,7 +22,7 @@
 | 状态真实性 | ✅ | `NAME sample PHASE Stable READY 2 DESIRED 2`；`status.conditions` 出现 `Available=True / Progressing=False` |
 | Events | ✅ | `kubectl get events --field-selector reason=KubeSentryReconcile` → `app available: 2/2 replicas ready` |
 | 控制器日志 | ✅ | `ERROR` 计数 = 0 |
-| CI | ⏳ | workflow 已重写（step 级 gate + build/e2e/image），结果见本次推送的 Actions |
+| CI | ✅ | 4 个 job 全绿：`docs` / `build`（gofmt+vet+build+test）/ `e2e`（kind 里真部署 + `wait --for=condition=Available`）/ `image`（多架构推送 GHCR）。run [41445360610](https://github.com/weirong-ui/kubesentry/actions/runs/41445360610)，耗时 14m52s |
 
 ## 三、三栏表：能力 / 真实状态 / 证据与缺口
 
@@ -79,6 +79,7 @@
 **CI**
 
 16. 重写 `.github/workflows/ci.yml`：条件判断从 job 级 `if` 移到 step 级（原写法使整份 workflow 校验失败，一个 job 都没创建过）；新增 `build`（gofmt/vet/build/test）与真实 `e2e`（kind + 构建镜像 + `make deploy` + `kubectl wait --for=condition=Available` + 校验 events）
+17. 首次跑通全绿：4/4 job success，徽章由红转绿
 
 ## 五、环境备忘（下次别再踩）
 
