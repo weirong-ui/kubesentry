@@ -96,7 +96,10 @@ func (e *Engine) Decide(app *appsv1alpha1.App, nowFn func() time.Time) Decision 
 
 	// 迟滞带：差值太小不动
 	hysteresis := int32(math.Max(1, float64(current)*0.1))
-	if diff := desired - current; diff <= hysteresis && diff >= -hysteresis {
+	withinBand := desired-current <= hysteresis && current-desired <= hysteresis
+	// 例外：回落到 minReplicas 不受迟滞带约束，否则 3 副本时永远缩不回 2
+	backToMin := desired == policy.MinReplicas && current > policy.MinReplicas
+	if withinBand && !backToMin {
 		return Decision{Action: ActionNone, FromReplicas: current, ToReplicas: current, Signals: signals}
 	}
 
@@ -106,10 +109,14 @@ func (e *Engine) Decide(app *appsv1alpha1.App, nowFn func() time.Time) Decision 
 			Reason: "scale down blocked by cooldown window", Signals: signals}
 	}
 
-	// 缩容渐进：单次最多 -20%
+	// 缩容渐进：单次最多减 20%，且至少减 1 个。
+	// 注意不能写成 ceil(current*0.8)：current=2/3/4 时 ceil 回到原值，永远缩不下去。
 	if desired < current {
-		floor := int32(math.Ceil(float64(current) * 0.8))
-		if desired < floor {
+		step := int32(math.Ceil(float64(current) * 0.2))
+		if step < 1 {
+			step = 1
+		}
+		if floor := current - step; desired < floor {
 			desired = floor
 		}
 	}
