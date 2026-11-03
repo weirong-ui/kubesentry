@@ -39,15 +39,15 @@
 | Kubernetes Events | ✅ 已实现 | `Recorder` 已注入；`KubeSentryScaleUp/Down/Heal/CanaryFailed/Error/Reconcile` 六类 reason；首次可用时发事件 |
 | Finalizer 删除时序 | ✅ 已实现 | 添加/移除正确；删前导出审计仍是 TODO(P2) |
 | 迟滞带 + 缩容渐进算法 | ✅ 已实现 | 纯函数逻辑完整（含"缩回 minReplicas 不受迟滞约束""`ceil(0.2×current)` 缩不动"两个坑） |
-| 冷却窗口 | 🚧 半成品 | `LastScalingAt` 现在会被写入（decision≠None 时）；但还没有指标源能触发决策，**端到端未验证** |
-| Prometheus 多信号伸缩 | 🚧 半成品 | 已定义 `MetricsSource` 接口并把 `Decide` 改成"无源则显式返回"，不再伪造信号；Prometheus 实现待 P1 |
+| 冷却窗口 | ✅ 已实现 | `LastScalingAt` 在 decision≠None 时写入；逻辑已被单测覆盖（冷却拦缩容、放行扩容、过期放行） |
+| Prometheus 多信号伸缩 | ✅ 已实现 | `internal/scaler/prometheus.go`：QPS（`rate` 换算副本）、P99（`histogram_quantile` 按比例扩）、错误率（超阈值扩 20%）；`--prometheus-url` 注入，不配则休眠。**集群端到端演示待 11.05（kube-prometheus-stack + hey 打流）** |
 | 故障识别（CrashLoop / OOM / 5xx） | 🗓 规划中 | `Inspect` 仍返回 `Unhealthy:false`，P2 |
 | 分级自愈 L1→L2→L3 | 🗓 规划中 | `Apply` 仍返回 `nil,nil`，P2 |
 | 金丝雀观察 + 自动回滚 | 🗓 规划中 | `InCanaryWindow` / `CheckCanary` 恒 false，`Rollback` 返回 not implemented，P2 |
 | Admission Webhook | 🗓 规划中 | `internal/webhook/` 不存在，`cmd/main.go` 未注册，P3 |
 | mini-Informer | 🗓 规划中 | `pkg/miniinformer/` 不存在，P4（Dockerfile 已预留注释位） |
 | Helm Chart | 🗓 规划中 | `charts/` 不存在，第 3 周在 kustomize 之后再做 |
-| 单元 / envtest 测试 | 🗓 规划中 | 0 用例；CI 里 `go test` 目前是空跑 |
+| 单元 / envtest 测试 | 🚧 半成品 | **28 个用例**（scaler 20 + controller 8）全部通过：迟滞带 / 冷却 / ceil 缩容渐进 / 上下限 / 多信号取 max / 无数据不当 0 / status 读真实副本 / Finalizer 生命周期 / selector-label 一致性。envtest 待第 3 周 |
 | 压测与 HPA 对比表 | 🗓 规划中 | 第 3 周 |
 
 ## 四、11.02 夜这一轮改了什么（P0 收尾）
@@ -93,11 +93,11 @@
 | 同 tag 重新构建后集群仍跑旧镜像 | 换 tag（`e2e2`/`e2e3`）或 `imagePullPolicy: Always`；containerd 会缓存同名 tag |
 | Docker Desktop 集群拉 `nginx:1.27-alpine` 报 registry-mirror 500 | 先在本机 `docker pull` 预热镜像，再让集群重试 |
 
-## 六、下一步（11.03 起）
+## 六、下一步（11.05 起）
 
-1. **P1 指标源**：实现 `scaler.PrometheusSource`（`rate(http_requests_total[5m])`、`histogram_quantile(0.99, ...)`、`rate(...{code=~"5.."}[5m])/rate(...)`），注入 `NewEngine()`
-2. **P1 端到端**：kind 里装 kube-prometheus-stack + hey 打流，观察副本上升，并验证"冷却窗口内不缩容"
-3. **单测**：给 `Decide` 的迟滞/冷却/渐进缩容写表驱动用例（≥5 个），把覆盖率写进 README badge
+1. **P1 端到端演示**：kind 里装 kube-prometheus-stack + hey 打流，观察副本上升，并验证"冷却窗口内不缩容"（代码已就绪，缺的是演示环境）
+2. ~~P1 指标源~~：**已完成**（2026-11-03），见 `internal/scaler/prometheus.go`
+3. ~~单测~~：**已完成**（2026-11-03），28 个用例
 4. **P2 自愈**：`Inspect` 读 `containerStatuses[].state.waiting.reason == CrashLoopBackOff` 与 `lastState.terminated.reason == OOMKilled`
 5. **第 3 周**：envtest、Helm Chart、压测对比表
 
@@ -107,3 +107,4 @@
 |---|---|---|
 | 2026-11-02 | 体检 + STATUS/README 账本 | 建立基线，暴露红线 |
 | 2026-11-02 夜 | P0 收尾（脚手架、Service、Status/Conditions、Events、CI） | 链路跑通：CR → Deploy+Service → Available |
+| 2026-11-03 | P1 指标源 + 28 个单测 + 仓库描述/topics + GitHub 主页 README | 伸缩引擎从"休眠"到"可用"；0 测试 → 28 用例 |

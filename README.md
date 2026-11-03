@@ -7,6 +7,7 @@
 [![Go Version](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go)](https://go.dev)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.28%2B-326CE5?logo=kubernetes)](https://kubernetes.io)
 [![CI](https://github.com/weirong-ui/kubesentry/actions/workflows/ci.yml/badge.svg)](https://github.com/weirong-ui/kubesentry/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/tests-28%20cases-brightgreen)](#开发)
 [![License](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
 > 一个基于 controller-runtime 的 Kubernetes Operator：不只让应用"活着"，还能让它**自己变强、自己疗伤**。
@@ -27,15 +28,15 @@
 | Status Conditions | ✅ 已实现 | `Available` / `Progressing` |
 | Kubernetes Events 审计 | ✅ 已实现 | 已接入 `EventRecorder`，六类 reason |
 | Finalizer 删除时序 | ✅ 已实现 | 删前导出审计待 P2 |
-| 迟滞带 + 缩容渐进算法 | ✅ 已实现 | 纯函数，单测待补 |
-| Prometheus 多信号伸缩 | 🚧 开发中 | 决策骨架就绪，指标源待 P1 接入 |
+| 迟滞带 + 缩容渐进算法 | ✅ 已实现 | 纯函数，表驱动单测覆盖 |
+| Prometheus 多信号伸缩 | ✅ 已实现 | `--prometheus-url` 注入（QPS/P99/错误率），单测覆盖；集群打流演示待 11.05 |
 | 冷却窗口 | 🚧 开发中 | 时间戳已落库，端到端待 P1 验证 |
 | 故障识别（CrashLoop / OOM / 5xx） | 🗓 规划中 | P2 |
 | 分级自愈（扩容→降级→回滚） | 🗓 规划中 | P2 |
 | 金丝雀观察 + 自动回滚 | 🗓 规划中 | P2 |
 | Admission Webhook | 🗓 规划中 | P3 |
 | 手写 mini-Informer | 🗓 规划中 | P4 |
-| 单元 / envtest 测试 | 🗓 规划中 | 第 3 周 |
+| 单元测试 | ✅ 28 用例 | 迟滞/冷却/渐进缩容/多信号/status 真实性/Finalizer；envtest 第 3 周 |
 | Helm Chart | 🗓 规划中 | 第 3 周 |
 
 ## 为什么做这个项目？
@@ -97,10 +98,13 @@ make deploy IMG=kubesentry:dev
 # 3. 创建一个受管应用
 kubectl apply -f config/samples/app_v1alpha1_app.yaml
 
-# 4. 观察 KubeSentry 的决策过程
+# 4.（可选）启用 P1 伸缩：解开 config/manager/manager.yaml 里 --prometheus-url 的注释
+#    并指向集群内 Prometheus，重新 deploy；不配则伸缩休眠，其余功能不受影响
+
+# 5. 观察 KubeSentry 的决策过程
 kubectl get app sample -w
 kubectl get deploy,svc -l app.kubernetes.io/managed-by=kubesentry
-kubectl get events --field-selector reason=KubeSentryReconcile
+kubectl get events --field-selector reason=KubeSentryScaleUp
 ```
 
 预期输出：
@@ -195,7 +199,7 @@ make docker-build IMG=kubesentry:dev
 > 勾选 = 代码已合并**且**可在干净集群复现。只有文档/骨架的阶段一律不勾。
 
 - [x] **P0**：Go 模块 + 代码生成 + App CRD + Reconcile 管理 Deployment/Service + Status/Conditions + Events
-- [ ] **P1**：Prometheus 多信号伸缩（`MetricsSource` 实现）+ 冷却/迟滞端到端验证
+- [ ] **P1**：Prometheus 多信号伸缩（指标源已实现）+ 冷却/迟滞端到端验证（打流演示）
 - [ ] **P2**：故障自愈引擎 + 金丝雀自动回滚
 - [ ] **P3**：Admission Webhook（校验 + 安全默认值注入）
 - [ ] **P4**：手写 mini-Informer + 原理系列文章

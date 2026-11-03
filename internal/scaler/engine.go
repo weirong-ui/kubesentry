@@ -60,8 +60,12 @@ func (d Decision) Describe() string {
 // 未注入时 Decide 会明确返回"无指标源"，而不是拿当前副本数冒充信号——
 // 后者会让伸缩"看起来在工作"，实际永远不触发，是最难查的一类 bug。
 type MetricsSource interface {
-	// DesiredReplicas 返回该指标下应存在的副本数；无数据时 ok=false。
-	DesiredReplicas(target appsv1alpha1.MetricTarget, current int32) (replicas int32, ok bool)
+	// DesiredReplicas 返回该指标下应存在的副本数；无数据或查询失败时 ok=false。
+	//
+	// ok=false 的语义是"我暂时不知道"，调用方必须跳过该信号，
+	// **绝不能当成 0 处理** —— 否则 Prometheus 一挂就会把副本缩到 min。
+	DesiredReplicas(ctx context.Context, app *appsv1alpha1.App,
+		target appsv1alpha1.MetricTarget, current int32) (replicas int32, ok bool)
 }
 
 // Engine 伸缩决策引擎。只做"决策"，不碰集群——这样 Decision 可以纯函数级单元测试.
@@ -84,7 +88,7 @@ func (e *Engine) WithMetricsSource(src MetricsSource) *Engine {
 
 // Decide 根据冷却窗口与迟滞规则判断是否伸缩。
 // 注意：指标查询（Prometheus）由上层注入，本方法只负责决策，便于纯逻辑单测。
-func (e *Engine) Decide(app *appsv1alpha1.App, nowFn func() time.Time) Decision {
+func (e *Engine) Decide(ctx context.Context, app *appsv1alpha1.App, nowFn func() time.Time) Decision {
 	e.nowFunc = nowFn
 	current := int32(1)
 	if app.Spec.Replicas != nil {
@@ -102,7 +106,7 @@ func (e *Engine) Decide(app *appsv1alpha1.App, nowFn func() time.Time) Decision 
 
 	// 多信号取最紧急者
 	for _, m := range policy.Metrics {
-		want, ok := e.source.DesiredReplicas(m, current)
+		want, ok := e.source.DesiredReplicas(ctx, app, m, current)
 		if !ok {
 			continue // 该信号暂时没有数据，跳过而不是当成 0
 		}

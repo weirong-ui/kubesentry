@@ -42,6 +42,10 @@ spec:
             - --leader-elect
             - --health-probe-bind-address=:8081
             - --metrics-bind-address=:8080
+            # 启用伸缩（P1）：指向集群内 Prometheus。
+            # 不配则伸缩引擎休眠，其余功能不受影响；指标名不匹配时用
+            # PROMETHEUS_URL 环境变量或改 internal/scaler/prometheus.go 的默认模板。
+            # - --prometheus-url=http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
           ports:
             - name: metrics
               containerPort: 8080

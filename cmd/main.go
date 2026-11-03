@@ -54,11 +54,16 @@ func main() {
 	var metricsAddr string
 	var enableLeaderElection bool
 	var probeAddr string
+	var promURL string
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Ensuring only one active instance.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	// Prometheus 地址：不配则伸缩引擎休眠（Decide 返回"无指标源"），其余功能不受影响。
+	// 集群内常见值：http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+	flag.StringVar(&promURL, "prometheus-url", os.Getenv("PROMETHEUS_URL"),
+		"Prometheus Query API endpoint; scaling stays dormant when empty.")
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -77,11 +82,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	scaleEngine := scaler.NewEngine()
+	if promURL != "" {
+		scaleEngine.WithMetricsSource(scaler.NewPrometheusSource(promURL))
+		setupLog.Info("scaling enabled", "prometheus", promURL)
+	} else {
+		setupLog.Info("scaling dormant: no --prometheus-url configured")
+	}
+
 	if err := (&controller.AppReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		// Scaler 暂未注入指标源（P1 接 Prometheus），此时 Decide 会明确返回"无指标源"
-		Scaler:   scaler.NewEngine(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Scaler:   scaleEngine,
 		Healer:   healer.NewEngine(),
 		Recorder: mgr.GetEventRecorderFor("kubesentry"),
 	}).SetupWithManager(mgr); err != nil {

@@ -161,7 +161,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return r.updateStatus(ctx, &app, deploy, appsv1alpha1.PhaseHealing, healthReport.Summary(), scaler.Decision{})
 	}
 
-	decision := r.Scaler.Decide(&app, time.Now)
+	decision := r.Scaler.Decide(ctx, &app, time.Now)
 	if decision.Action != scaler.ActionNone {
 		if err := r.Scaler.Apply(ctx, r.Client, &app, decision); err != nil {
 			r.emitEvent(&app, corev1.EventTypeWarning, EventReasonError, "scale: "+err.Error())
