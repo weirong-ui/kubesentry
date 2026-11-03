@@ -7,7 +7,7 @@
 [![Go Version](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go)](https://go.dev)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.28%2B-326CE5?logo=kubernetes)](https://kubernetes.io)
 [![CI](https://github.com/weirong-ui/kubesentry/actions/workflows/ci.yml/badge.svg)](https://github.com/weirong-ui/kubesentry/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-28%20cases-brightgreen)](#开发)
+[![Tests](https://img.shields.io/badge/tests-31%20cases-brightgreen)](#开发)
 [![License](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
 > 一个基于 controller-runtime 的 Kubernetes Operator：不只让应用"活着"，还能让它**自己变强、自己疗伤**。
@@ -29,14 +29,14 @@
 | Kubernetes Events 审计 | ✅ 已实现 | 已接入 `EventRecorder`，六类 reason |
 | Finalizer 删除时序 | ✅ 已实现 | 删前导出审计待 P2 |
 | 迟滞带 + 缩容渐进算法 | ✅ 已实现 | 纯函数，表驱动单测覆盖 |
-| Prometheus 多信号伸缩 | ✅ 已实现 | `--prometheus-url` 注入（QPS/P99/错误率），单测覆盖；集群打流演示待 11.05 |
+| Prometheus 多信号伸缩 | ✅ 已实现 | `--prometheus-url` 注入（QPS/P99/错误率）；真集群验证：扩容 2→5 → 冷却拦截 → 渐进缩回 |
 | 冷却窗口 | 🚧 开发中 | 时间戳已落库，端到端待 P1 验证 |
 | 故障识别（CrashLoop / OOM / 5xx） | 🗓 规划中 | P2 |
 | 分级自愈（扩容→降级→回滚） | 🗓 规划中 | P2 |
 | 金丝雀观察 + 自动回滚 | 🗓 规划中 | P2 |
 | Admission Webhook | 🗓 规划中 | P3 |
 | 手写 mini-Informer | 🗓 规划中 | P4 |
-| 单元测试 | ✅ 28 用例 | 迟滞/冷却/渐进缩容/多信号/status 真实性/Finalizer；envtest 第 3 周 |
+| 单元测试 | ✅ 31 用例 | 迟滞/冷却/渐进缩容/多信号/序列化回归/status 真实性/Finalizer；envtest 第 3 周 |
 | Helm Chart | 🗓 规划中 | 第 3 周 |
 
 ## 为什么做这个项目？

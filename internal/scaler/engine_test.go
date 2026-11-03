@@ -18,6 +18,8 @@ package scaler
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,13 +49,53 @@ func newApp(replicas, min, max int32, cooldown int, metrics ...appsv1alpha1.Metr
 		ObjectMeta: metav1.ObjectMeta{Name: "sample", Namespace: "default"},
 		Spec: appsv1alpha1.AppSpec{
 			Replicas: &replicas,
-			Scaling: appsv1alpha1.ScalingPolicy{
+			Scaling: &appsv1alpha1.ScalingPolicy{
 				MinReplicas:     min,
 				MaxReplicas:     max,
 				CooldownSeconds: cooldown,
 				Metrics:         metrics,
 			},
 		},
+	}
+}
+
+// TestDecide_NoScalingPolicy 省略 spec.scaling 时必须显式拒绝，
+// 不能按零值继续（minReplicas=0 会把副本缩没）。
+func TestDecide_NoScalingPolicy(t *testing.T) {
+	app := &appsv1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "bare", Namespace: "default"},
+		Spec:       appsv1alpha1.AppSpec{Replicas: int32Ptr3(3)},
+	}
+	e := NewEngine().WithMetricsSource(fakeSource{vals: map[appsv1alpha1.MetricType]fakeVal{
+		appsv1alpha1.MetricQPS: {100, true},
+	}})
+	d := e.Decide(context.Background(), app, func() time.Time { return frozen })
+	if d.Action != ActionNone || d.Reason == "" {
+		t.Fatalf("want explicit None with reason, got %+v", d)
+	}
+}
+
+func int32Ptr3(v int32) *int32 { return &v }
+
+// TestAppSpec_OmitsNilPolicies 锁住真实集群里炸出来的序列化 bug：
+// Go 的 omitempty 对结构体不生效——值类型的 Scaling/Health 会被序列化成
+// 零值对象（strategy=""），被 CRD 的 enum 校验拒绝，导致 finalizer 的
+// Update 失败、对象卡死。指针类型 + omitempty 才能真正省略。
+func TestAppSpec_OmitsNilPolicies(t *testing.T) {
+	app := &appsv1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "bare", Namespace: "default"},
+		Spec:       appsv1alpha1.AppSpec{Image: "nginx:1.27"},
+	}
+	b, err := json.Marshal(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	if strings.Contains(s, "scaling") {
+		t.Errorf("nil Scaling must be omitted from JSON, got %s", s)
+	}
+	if strings.Contains(s, "health") {
+		t.Errorf("nil Health must be omitted from JSON, got %s", s)
 	}
 }
 

@@ -134,7 +134,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 
 	// ---------- 3. 金丝雀观察窗口 ----------
-	if app.Spec.Health.Canary.Enabled && r.Healer.InCanaryWindow(&app) {
+	if app.Spec.Health != nil && app.Spec.Health.Canary.Enabled && r.Healer.InCanaryWindow(&app) {
 		failed := r.Healer.CheckCanary(ctx, &app)
 		if failed {
 			r.emitEvent(&app, corev1.EventTypeWarning, EventReasonCanaryFail,

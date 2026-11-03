@@ -40,14 +40,14 @@
 | Finalizer 删除时序 | ✅ 已实现 | 添加/移除正确；删前导出审计仍是 TODO(P2) |
 | 迟滞带 + 缩容渐进算法 | ✅ 已实现 | 纯函数逻辑完整（含"缩回 minReplicas 不受迟滞约束""`ceil(0.2×current)` 缩不动"两个坑） |
 | 冷却窗口 | ✅ 已实现 | `LastScalingAt` 在 decision≠None 时写入；逻辑已被单测覆盖（冷却拦缩容、放行扩容、过期放行） |
-| Prometheus 多信号伸缩 | ✅ 已实现 | `internal/scaler/prometheus.go`：QPS（`rate` 换算副本）、P99（`histogram_quantile` 按比例扩）、错误率（超阈值扩 20%）；`--prometheus-url` 注入，不配则休眠。**集群端到端演示待 11.05（kube-prometheus-stack + hey 打流）** |
+| Prometheus 多信号伸缩 | ✅ 已实现 | `internal/scaler/prometheus.go`：QPS（`rate` 换算副本）、P99（`histogram_quantile` 按比例扩）、错误率（超阈值扩 20%）；`--prometheus-url` 注入，不配则休眠。**已在真集群端到端验证**（2026-11-03，Docker Desktop k8s：假 Prometheus 供数 → 扩容 2→5 → 冷却窗口 120s 内拒绝缩容 → 窗口过期后渐进缩容 5→4，Events 全程留痕）；kube-prometheus-stack + hey 打流的演示视频待 11.08 |
 | 故障识别（CrashLoop / OOM / 5xx） | 🗓 规划中 | `Inspect` 仍返回 `Unhealthy:false`，P2 |
 | 分级自愈 L1→L2→L3 | 🗓 规划中 | `Apply` 仍返回 `nil,nil`，P2 |
 | 金丝雀观察 + 自动回滚 | 🗓 规划中 | `InCanaryWindow` / `CheckCanary` 恒 false，`Rollback` 返回 not implemented，P2 |
 | Admission Webhook | 🗓 规划中 | `internal/webhook/` 不存在，`cmd/main.go` 未注册，P3 |
 | mini-Informer | 🗓 规划中 | `pkg/miniinformer/` 不存在，P4（Dockerfile 已预留注释位） |
 | Helm Chart | 🗓 规划中 | `charts/` 不存在，第 3 周在 kustomize 之后再做 |
-| 单元 / envtest 测试 | 🚧 半成品 | **28 个用例**（scaler 20 + controller 8）全部通过：迟滞带 / 冷却 / ceil 缩容渐进 / 上下限 / 多信号取 max / 无数据不当 0 / status 读真实副本 / Finalizer 生命周期 / selector-label 一致性。envtest 待第 3 周 |
+| 单元 / envtest 测试 | 🚧 半成品 | **31 个用例**（scaler 23 + controller 8）全部通过：迟滞带 / 冷却 / ceil 缩容渐进 / 上下限 / 多信号取 max / 无数据不当 0 / status 读真实副本 / Finalizer 生命周期 / selector-label 一致性。envtest 待第 3 周 |
 | 压测与 HPA 对比表 | 🗓 规划中 | 第 3 周 |
 
 ## 四、11.02 夜这一轮改了什么（P0 收尾）
@@ -75,13 +75,18 @@
 
 14. `+kubebuilder:default={}` 打在 `Scaling` / `Health` / `Canary` 结构体上会生成非法 CRD（`default: {}` 缺少必填子字段），导致 `kubectl apply` CRD 直接被拒 —— 改为字段级 default + `+optional`
 15. `status.currentReplicas` 若设为 required，值为 0 时 merge patch 不带该字段会报 `Required value` —— 保持 optional
+16. **11.03 新发现**：`Scaling`/`Health` 原为值类型 + `omitempty`——Go 的 `omitempty` 对结构体不生效，控制器回写对象（如加 finalizer）时会把省略的 `health` 序列化成 `{"strategy":""}`，被 CRD 的 enum 校验拒绝 → **省略 spec.health 的任何 App 都会在第一轮 Reconcile 无限报错**（样例 CR 恰好写了全字段所以 P0 没暴露）。修复：改 `*ScalingPolicy` / `*HealthPolicy` 指针，并加了序列化回归测试（`TestAppSpec_OmitsNilPolicies`）
 
 **CI**
 
 16. 重写 `.github/workflows/ci.yml`：条件判断从 job 级 `if` 移到 step 级（原写法使整份 workflow 校验失败，一个 job 都没创建过）；新增 `build`（gofmt/vet/build/test）与真实 `e2e`（kind + 构建镜像 + `make deploy` + `kubectl wait --for=condition=Available` + 校验 events）
 17. 首次跑通全绿：4/4 job success，徽章由红转绿
 
-## 五、环境备忘（下次别再踩）
+## 五、已知噪音（不阻塞，待优化）
+
+- `ensureDeployment` 偶发 `the object has been modified` conflict：Deployment controller 改 status 与我们的 CreateOrUpdate 竞争。Reconcile 会退避重试并成功，但日志里留 ERROR + Warning Event，观感差。优化方向：对 `apierrors.IsConflict` 静默返回（不 emit event），或 CreateOrUpdate 失败后立刻重读一次。
+
+## 六、环境备忘（下次别再踩）
 
 | 现象 | 处理 |
 |---|---|
@@ -93,18 +98,18 @@
 | 同 tag 重新构建后集群仍跑旧镜像 | 换 tag（`e2e2`/`e2e3`）或 `imagePullPolicy: Always`；containerd 会缓存同名 tag |
 | Docker Desktop 集群拉 `nginx:1.27-alpine` 报 registry-mirror 500 | 先在本机 `docker pull` 预热镜像，再让集群重试 |
 
-## 六、下一步（11.05 起）
+## 七、下一步（11.05 起）
 
-1. **P1 端到端演示**：kind 里装 kube-prometheus-stack + hey 打流，观察副本上升，并验证"冷却窗口内不缩容"（代码已就绪，缺的是演示环境）
+1. **P1 演示视频**：kube-prometheus-stack + hey 真实打流录 demo #1（逻辑已集群验证过，缺的是真实指标源与录屏）
 2. ~~P1 指标源~~：**已完成**（2026-11-03），见 `internal/scaler/prometheus.go`
-3. ~~单测~~：**已完成**（2026-11-03），28 个用例
+3. ~~单测~~：**已完成**（2026-11-03），31 个用例
 4. **P2 自愈**：`Inspect` 读 `containerStatuses[].state.waiting.reason == CrashLoopBackOff` 与 `lastState.terminated.reason == OOMKilled`
 5. **第 3 周**：envtest、Helm Chart、压测对比表
 
-## 七、每日勾选
+## 八、每日勾选
 
 | 完成日 | 事项 | 状态变化 |
 |---|---|---|
 | 2026-11-02 | 体检 + STATUS/README 账本 | 建立基线，暴露红线 |
 | 2026-11-02 夜 | P0 收尾（脚手架、Service、Status/Conditions、Events、CI） | 链路跑通：CR → Deploy+Service → Available |
-| 2026-11-03 | P1 指标源 + 28 个单测 + 仓库描述/topics + GitHub 主页 README | 伸缩引擎从"休眠"到"可用"；0 测试 → 28 用例 |
+| 2026-11-03 | P1 指标源 + 31 个单测 + 真集群端到端验证 + 仓库描述/topics + GitHub 主页 README | 伸缩引擎从"休眠"到"集群验证过"；0 测试 → 31 用例；修掉 omitempty 结构体序列化 bug |

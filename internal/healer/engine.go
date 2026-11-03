@@ -93,7 +93,7 @@ func (e *Engine) Inspect(ctx context.Context, app *appsv1alpha1.App) Report {
 
 // InCanaryWindow 判断当前是否处于金丝雀观察窗口内.
 func (e *Engine) InCanaryWindow(app *appsv1alpha1.App) bool {
-	if !app.Spec.Health.Canary.Enabled {
+	if app.Spec.Health == nil || !app.Spec.Health.Canary.Enabled {
 		return false
 	}
 	// TODO(P2): 基于上一次镜像变更时间 + ObservationSeconds 判断窗口

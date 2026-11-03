@@ -55,7 +55,7 @@ spec:
             description: AppSpec defines the desired state of App.
             properties:
               health:
-                description: Health 健康与自愈策略。可省略：省略时使用零值（不分级自愈）.
+                description: Health 健康与自愈策略。可省略：省略时不做自愈。指针原因同上。
                 properties:
                   canary:
                     description: CanaryPolicy 金丝雀发布观察策略.
@@ -102,7 +102,10 @@ spec:
                 minimum: 0
                 type: integer
               scaling:
-                description: Scaling 伸缩策略。可省略：省略时不做伸缩决策.
+                description: |-
+                  Scaling 伸缩策略。可省略：省略时不做伸缩决策。
+                  必须是指针：omitempty 对结构体不生效，值类型会把省略的字段
+                  序列化成零值对象（minReplicas=0 等），被 CRD 校验拒绝。
                 properties:
                   cooldownSeconds:
                     default: 120

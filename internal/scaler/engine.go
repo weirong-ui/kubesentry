@@ -96,8 +96,17 @@ func (e *Engine) Decide(ctx context.Context, app *appsv1alpha1.App, nowFn func()
 	}
 
 	policy := app.Spec.Scaling
-	signals := make(map[appsv1alpha1.MetricType]int32, len(policy.Metrics))
-	var desired int32 = policy.MinReplicas
+	signals := make(map[appsv1alpha1.MetricType]int32)
+	var desired int32
+	if policy != nil {
+		desired = policy.MinReplicas
+	}
+
+	// 没配伸缩策略：明确说明，而不是按零值继续算（minReplicas=0 会把副本缩没）
+	if policy == nil {
+		return Decision{Action: ActionNone, FromReplicas: current, ToReplicas: current,
+			Reason: "no scaling policy configured", Signals: signals}
+	}
 
 	if e.source == nil {
 		return Decision{Action: ActionNone, FromReplicas: current, ToReplicas: current,

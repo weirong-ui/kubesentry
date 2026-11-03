@@ -129,13 +129,15 @@ type AppSpec struct {
 	// +kubebuilder:default=8080
 	Port int32 `json:"port"`
 
-	// Scaling 伸缩策略。可省略：省略时不做伸缩决策.
+	// Scaling 伸缩策略。可省略：省略时不做伸缩决策。
+	// 必须是指针：omitempty 对结构体不生效，值类型会把省略的字段
+	// 序列化成零值对象（minReplicas=0 等），被 CRD 校验拒绝。
 	// +optional
-	Scaling ScalingPolicy `json:"scaling,omitempty"`
+	Scaling *ScalingPolicy `json:"scaling,omitempty"`
 
-	// Health 健康与自愈策略。可省略：省略时使用零值（不分级自愈）.
+	// Health 健康与自愈策略。可省略：省略时不做自愈。指针原因同上。
 	// +optional
-	Health HealthPolicy `json:"health,omitempty"`
+	Health *HealthPolicy `json:"health,omitempty"`
 }
 
 // AppStatus defines the observed state of App.
