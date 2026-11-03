@@ -1,6 +1,6 @@
 # 从零写一个 K8s Operator：kubebuilder 初始化到第一个 Reconcile
 
-> 本系列第一篇[《HPA 只会伸缩不会自愈？我设计了一个 K8s 应用自愈 Operator》](https://juejin.cn)讲清楚了 KubeSentry 的整体设计。本篇开始动手：从 `kubebuilder init` 开始，一步步写出第一个能跑的 Reconcile 循环，并用 envtest 给它写上测试。跟着做完，你就拥有了一个自己的 Operator 骨架。
+> 本系列第一篇[《HPA 只会伸缩不会自愈？我设计了一个 K8s 应用自愈 Operator》](https://juejin.cn/post/7702723478470852646)讲清楚了 KubeSentry 的整体设计。本篇开始动手：从 `kubebuilder init` 开始，一步步写出第一个能跑的 Reconcile 循环，并用 envtest 给它写上测试。跟着做完，你就拥有了一个自己的 Operator 骨架。
 
 ## 一、准备环境
 
