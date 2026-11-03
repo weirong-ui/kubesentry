@@ -11,7 +11,9 @@
 [![License](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
 > 一个基于 controller-runtime 的 Kubernetes Operator：不只让应用"活着"，还能让它**自己变强、自己疗伤**。
-> 项目配套的系列文章发布在掘金：[《手写一个 K8s Operator：KubeSentry 设计与实现》](https://juejin.cn)
+> 项目配套的系列文章发布在掘金（[作者主页](https://juejin.cn/user/1835559210983642)）：
+> 1. [HPA 只会伸缩不会自愈？我设计了一个 K8s 应用自愈 Operator：KubeSentry](https://juejin.cn/post/7702723478470852646)
+> 2. [从零写一个 K8s Operator：kubebuilder 初始化到第一个 Reconcile](https://juejin.cn/post/7703105289100951561)
 
 ## 实现状态
 
