@@ -121,6 +121,14 @@ func (in *AppStatus) DeepCopyInto(out *AppStatus) {
 		in, out := &in.LastScalingAt, &out.LastScalingAt
 		*out = (*in).DeepCopy()
 	}
+	if in.LastHealAt != nil {
+		in, out := &in.LastHealAt, &out.LastHealAt
+		*out = (*in).DeepCopy()
+	}
+	if in.LastImageChangeAt != nil {
+		in, out := &in.LastImageChangeAt, &out.LastImageChangeAt
+		*out = (*in).DeepCopy()
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))

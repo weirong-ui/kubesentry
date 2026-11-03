@@ -7,7 +7,7 @@
 [![Go Version](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go)](https://go.dev)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.28%2B-326CE5?logo=kubernetes)](https://kubernetes.io)
 [![CI](https://github.com/weirong-ui/kubesentry/actions/workflows/ci.yml/badge.svg)](https://github.com/weirong-ui/kubesentry/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-31%20cases-brightgreen)](#开发)
+[![Tests](https://img.shields.io/badge/tests-57%20cases-brightgreen)](#开发)
 [![License](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
 > 一个基于 controller-runtime 的 Kubernetes Operator：不只让应用"活着"，还能让它**自己变强、自己疗伤**。
@@ -17,8 +17,9 @@
 
 ## 实现状态
 
-> **P0 已闭环**：`kubectl apply` 一个 `App` CR，会自动创建 Deployment + Service，`status` 反映真实就绪副本并写出 Events。
-> 逐条能力清单、验证证据与环境备忘见 [docs/STATUS.md](docs/STATUS.md)，最近更新：2026-11-02。
+> **P0/P1/P2 已闭环**：除了 `apply CR → Deployment + Service → Available`，弹性伸缩与分级自愈都在真集群验证过——
+> 实录见 [docs/demo/01-scaling.md](docs/demo/01-scaling.md)（真 Prometheus + 打流）与 [docs/demo/02-self-healing.md](docs/demo/02-self-healing.md)（CrashLoop 自愈 / 金丝雀自动回滚）。
+> 逐条能力清单见 [docs/STATUS.md](docs/STATUS.md)，最近更新：2026-11-03。
 > 下方"核心特性"中带 🗓 的部分仍是目标能力，不代表已可用。
 
 | 能力 | 状态 | 说明 |
@@ -29,16 +30,16 @@
 | Status 真实副本数 | ✅ 已实现 | 取自 `Deployment.status.readyReplicas`，与 spec 分离 |
 | Status Conditions | ✅ 已实现 | `Available` / `Progressing` |
 | Kubernetes Events 审计 | ✅ 已实现 | 已接入 `EventRecorder`，六类 reason |
-| Finalizer 删除时序 | ✅ 已实现 | 删前导出审计待 P2 |
+| Finalizer 删除时序 | ✅ 已实现 | 删前导出审计待 P3 |
 | 迟滞带 + 缩容渐进算法 | ✅ 已实现 | 纯函数，表驱动单测覆盖 |
-| Prometheus 多信号伸缩 | ✅ 已实现 | `--prometheus-url` 注入（QPS/P99/错误率）；真集群验证：扩容 2→5 → 冷却拦截 → 渐进缩回 |
-| 冷却窗口 | 🚧 开发中 | 时间戳已落库，端到端待 P1 验证 |
-| 故障识别（CrashLoop / OOM / 5xx） | 🗓 规划中 | P2 |
-| 分级自愈（扩容→降级→回滚） | 🗓 规划中 | P2 |
-| 金丝雀观察 + 自动回滚 | 🗓 规划中 | P2 |
+| Prometheus 多信号伸缩 | ✅ 已实现 | 真 Prometheus + 打流验证：500 QPS 扩 1→5，停流渐进缩 5→1（[实录](docs/demo/01-scaling.md)） |
+| 冷却窗口 | ✅ 已实现 | 真集群验证：缩容被窗口拦截、过期后放行，每步最多缩 20% |
+| 故障识别（CrashLoop / OOM / 高频重启） | ✅ 已实现 | 读 Pod containerStatuses；真集群验证（[实录](docs/demo/02-self-healing.md)） |
+| 分级自愈（扩容→摘除→回滚） | ✅ 已实现 | L1 扩 20% / L2 删坏 Pod / L3 按 ReplicaSet 修订回滚；冷却期内复发自动升级 |
+| 金丝雀观察 + 自动回滚 | ✅ 已实现 | 镜像变更开窗，错误率超阈值自动回滚并关窗；真集群 ~20s 完成回滚 |
 | Admission Webhook | 🗓 规划中 | P3 |
 | 手写 mini-Informer | 🗓 规划中 | P4 |
-| 单元测试 | ✅ 31 用例 | 迟滞/冷却/渐进缩容/多信号/序列化回归/status 真实性/Finalizer；envtest 第 3 周 |
+| 单元测试 | ✅ 57 用例 | 伸缩决策/自愈分级/升级路径/回滚选版/金丝雀边界/status 真实性/Finalizer；envtest 第 3 周 |
 | Helm Chart | 🗓 规划中 | 第 3 周 |
 
 ## 为什么做这个项目？
@@ -157,13 +158,14 @@ spec:
 ```
 kubesentry/
 ├── api/v1alpha1/          # App CRD 类型定义 + DeepCopy
-├── cmd/                   # 入口：manager（webhook 待 P3 并入）
+├── cmd/                   # 入口：manager（webhook 待 P3 并入）/ demoapp（演示负载）
 ├── internal/
 │   ├── controller/        # 核心调和循环（Deployment/Service/Status/Events）
 │   ├── scaler/            # 伸缩决策引擎（决策与执行分离，MetricsSource 由 P1 注入）
 │   ├── healer/            # 自愈引擎（骨架）
 │   └── webhook/ *         # Admission Webhook（P3）
 ├── pkg/miniinformer/ *    # 手写 Informer（P4）
+├── deploy/                # demoapp 镜像 Dockerfile + demo/ 演示清单（真 Prometheus）
 ├── config/
 │   ├── crd/bases/         # controller-gen 生成的 CRD
 │   ├── rbac/              # ClusterRole / Binding / ServiceAccount
@@ -201,12 +203,13 @@ make docker-build IMG=kubesentry:dev
 > 勾选 = 代码已合并**且**可在干净集群复现。只有文档/骨架的阶段一律不勾。
 
 - [x] **P0**：Go 模块 + 代码生成 + App CRD + Reconcile 管理 Deployment/Service + Status/Conditions + Events
-- [ ] **P1**：Prometheus 多信号伸缩（指标源已实现）+ 冷却/迟滞端到端验证（打流演示）
-- [ ] **P2**：故障自愈引擎 + 金丝雀自动回滚
+- [x] **P1**：Prometheus 多信号伸缩 + 冷却/迟滞端到端验证（真 Prometheus + 打流，[实录](docs/demo/01-scaling.md)）
+- [x] **P2**：故障自愈引擎 + 金丝雀自动回滚（真集群验证，[实录](docs/demo/02-self-healing.md)）
 - [ ] **P3**：Admission Webhook（校验 + 安全默认值注入）
 - [ ] **P4**：手写 mini-Informer + 原理系列文章
-- [ ] **P5**：基于 eBPF 的无侵入指标采集
-- [ ] **P6**：多集群容灾调度
+
+> P5（eBPF 无侵入采集）/ P6（多集群调度）已移出承诺范围，降为远景方向——
+> 对个人项目而言先把 P0–P4 做扎实比铺开摊子更有说服力。
 
 逐条进度与证据见 [docs/STATUS.md](docs/STATUS.md)，里程碑细节见 [docs/ROADMAP.md](docs/ROADMAP.md)。
 

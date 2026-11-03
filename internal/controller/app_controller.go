@@ -76,6 +76,7 @@ type AppReconciler struct {
 // +kubebuilder:rbac:groups=apps.sentry.io,resources=apps/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=apps.sentry.io,resources=apps/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=services;events;pods,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods/status,verbs=get
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
@@ -135,30 +136,61 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 	// ---------- 3. 金丝雀观察窗口 ----------
 	if app.Spec.Health != nil && app.Spec.Health.Canary.Enabled && r.Healer.InCanaryWindow(&app) {
-		failed := r.Healer.CheckCanary(ctx, &app)
-		if failed {
-			r.emitEvent(&app, corev1.EventTypeWarning, EventReasonCanaryFail,
-				"error rate exceeded threshold during canary window, rolling back")
-			if err := r.Healer.Rollback(ctx, r.Client, &app, deploy); err != nil {
+		if r.Healer.CheckCanary(ctx, &app) {
+			rev, err := r.Healer.Rollback(ctx, r.Client, &app, deploy)
+			if err != nil {
+				r.emitEvent(&app, corev1.EventTypeWarning, EventReasonError, "canary rollback: "+err.Error())
 				return ctrl.Result{}, fmt.Errorf("canary rollback: %w", err)
 			}
-			return r.updateStatus(ctx, &app, deploy, appsv1alpha1.PhaseRollingBack, "canary rollback", scaler.Decision{})
+			if rev == 0 {
+				// 错误率超阈值，但没有更早的版本可退：只告警，不空转
+				r.emitEvent(&app, corev1.EventTypeWarning, EventReasonCanaryFail,
+					"error rate exceeded threshold, but no previous revision to roll back to")
+				return r.updateStatus(ctx, &app, deploy, statusPatch{phase: appsv1alpha1.PhaseStable})
+			}
+			r.emitEvent(&app, corev1.EventTypeWarning, EventReasonRollback,
+				fmt.Sprintf("canary failed (error rate exceeded %s): rolled back to revision %d",
+					app.Spec.Health.Canary.ErrorRateThreshold, rev))
+			return r.updateStatus(ctx, &app, deploy, statusPatch{
+				phase:            appsv1alpha1.PhaseRollingBack,
+				rolledBack:       true,
+				rollbackRevision: rev,
+			})
 		}
-		return r.updateStatus(ctx, &app, deploy, appsv1alpha1.PhaseStable, "", scaler.Decision{})
+		return r.updateStatus(ctx, &app, deploy, statusPatch{phase: appsv1alpha1.PhaseStable})
 	}
 
 	// ---------- 4. 健康 → 自愈 / 正常 → 伸缩 ----------
-	healthReport := r.Healer.Inspect(ctx, &app)
+	healthReport := r.Healer.Inspect(ctx, r.Client, &app)
 	if healthReport.Unhealthy {
+		// observability-only：只留证据不动作，给"先看清楚再动手"的保守场景用
+		if app.Spec.Health != nil && app.Spec.Health.Strategy == appsv1alpha1.StrategyObservabilityOnly {
+			r.emitEvent(&app, corev1.EventTypeWarning, EventReasonHeal,
+				"observability-only, no action taken: "+healthReport.Summary())
+			return r.updateStatus(ctx, &app, deploy, statusPatch{
+				phase:       appsv1alpha1.PhaseHealing,
+				healSummary: healthReport.Summary(),
+			})
+		}
 		action, err := r.Healer.Apply(ctx, r.Client, &app, deploy, healthReport)
 		if err != nil {
 			r.emitEvent(&app, corev1.EventTypeWarning, EventReasonError, "heal: "+err.Error())
 			return ctrl.Result{}, fmt.Errorf("heal: %w", err)
 		}
 		if action != nil {
-			r.emitEvent(&app, corev1.EventTypeNormal, EventReasonHeal, action.Describe())
+			r.emitEvent(&app, corev1.EventTypeWarning, EventReasonHeal, action.Describe())
+			log.Info("healed", "action", action.Describe())
+		} else {
+			// 病了但无动作可执行（已到 L3 观察期 / 无版本可退 / 已到副本上限）：
+			// 必须留事件，否则"系统病了但 KubeSentry 没动静"会看起来像漏报
+			r.emitEvent(&app, corev1.EventTypeWarning, EventReasonHeal,
+				"no action available (observing or at limit): "+healthReport.Summary())
 		}
-		return r.updateStatus(ctx, &app, deploy, appsv1alpha1.PhaseHealing, healthReport.Summary(), scaler.Decision{})
+		return r.updateStatus(ctx, &app, deploy, statusPatch{
+			phase:       appsv1alpha1.PhaseHealing,
+			healAction:  action,
+			healSummary: healthReport.Summary(),
+		})
 	}
 
 	decision := r.Scaler.Decide(ctx, &app, time.Now)
@@ -176,7 +208,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 
 	// ---------- 5. 回写 Status ----------
-	return r.updateStatus(ctx, &app, deploy, appsv1alpha1.PhaseStable, "", decision)
+	return r.updateStatus(ctx, &app, deploy, statusPatch{phase: appsv1alpha1.PhaseStable, decision: decision})
 }
 
 // ensureDeployment 按 App spec 创建或更新 Deployment（幂等的 CreateOrUpdate）。
@@ -198,6 +230,14 @@ func (r *AppReconciler) ensureDeployment(ctx context.Context, app *appsv1alpha1.
 			Name:  app.Name,
 			Image: app.Spec.Image,
 			Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: appPort(app), Protocol: corev1.ProtocolTCP}},
+			// 注入身份环境变量：应用打指标标签（app=/namespace=）时直接用，
+			// 与 PrometheusSource 的 PromQL 模板（{app}/{namespace}）约定一致。
+			Env: []corev1.EnvVar{
+				{Name: "APP_NAME", Value: app.Name},
+				{Name: "POD_NAMESPACE", ValueFrom: &corev1.EnvVarSource{
+					FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
+				}},
+			},
 		}}
 		return controllerutil.SetControllerReference(app, want, r.Scheme)
 	})
@@ -236,12 +276,28 @@ func (r *AppReconciler) ensureService(ctx context.Context, app *appsv1alpha1.App
 	return want, nil
 }
 
+// statusPatch 一轮 Reconcile 需要落进 status 的信息。
+// 用结构体而不是一长串位置参数：回滚/自愈/伸缩三路径的调用点才不会传错位。
+type statusPatch struct {
+	phase appsv1alpha1.AppPhase
+
+	// 自愈路径
+	healAction  *healer.Action // 本轮实际执行的动作（nil = 观察中/无可执行）
+	healSummary string         // Inspect 的原始结论，动作被跳过时也有据可查
+
+	// 伸缩路径
+	decision scaler.Decision
+
+	// 金丝雀回滚路径
+	rolledBack       bool
+	rollbackRevision int64
+}
+
 // updateStatus 用观测到的真实状态回写 status，并维护 Conditions。
 // 关键：副本数取自 Deployment.status，而不是 spec —— 否则 status 永远是期望值，
 // `kubectl get app` 与实际脱节，排障时会误导。
 func (r *AppReconciler) updateStatus(ctx context.Context, app *appsv1alpha1.App,
-	deploy *appsv1.Deployment, phase appsv1alpha1.AppPhase,
-	healSummary string, decision scaler.Decision) (ctrl.Result, error) {
+	deploy *appsv1.Deployment, sp statusPatch) (ctrl.Result, error) {
 
 	patch := client.MergeFrom(app.DeepCopy())
 
@@ -249,21 +305,40 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *appsv1alpha1.App,
 	ready := deploy.Status.ReadyReplicas
 	wasAvailable := meta.IsStatusConditionTrue(app.Status.Conditions, conditionAvailable)
 
-	app.Status.Phase = phase
+	app.Status.Phase = sp.phase
 	app.Status.ObservedGeneration = app.Generation
 	app.Status.CurrentReplicas = ready
 	app.Status.DesiredReplicas = desired
 
-	if healSummary != "" {
-		app.Status.LastHealAction = healSummary
+	// 金丝雀窗口的账本：镜像变更打开窗口，回滚关闭窗口。
+	// 回滚路径必须先标记（否则 spec.Image 变了会被误判成"新发布"，窗口重开 → 回滚死循环）。
+	if sp.rolledBack {
+		app.Status.CurrentImage = app.Spec.Image
+		app.Status.LastImageChangeAt = nil
+		app.Status.RollbackRevision = sp.rollbackRevision
+	} else if app.Status.CurrentImage != app.Spec.Image {
+		app.Status.CurrentImage = app.Spec.Image
+		now := metav1.Now()
+		app.Status.LastImageChangeAt = &now
 	}
+
+	// 自愈账本：记录动作等级与时间，供升级路径（冷却期内复发 → 升级）判断
+	if sp.healAction != nil {
+		app.Status.LastHealAction = sp.healAction.Describe()
+		app.Status.LastHealLevel = int(sp.healAction.Level)
+		now := metav1.Now()
+		app.Status.LastHealAt = &now
+	} else if sp.healSummary != "" {
+		app.Status.LastHealAction = sp.healSummary
+	}
+
 	// 伸缩动作落地后更新冷却窗口起点（决策发生在本次 Reconcile 内）
-	if decision.Action != scaler.ActionNone {
+	if sp.decision.Action != scaler.ActionNone {
 		now := metav1.Now()
 		app.Status.LastScalingAt = &now
 	}
 	// 已收敛时清掉历史自愈动作，避免 status 里永远挂着一条过期信息
-	if phase == appsv1alpha1.PhaseStable && ready >= desired && app.Status.LastHealAction != "" {
+	if sp.phase == appsv1alpha1.PhaseStable && ready >= desired && app.Status.LastHealAction != "" {
 		app.Status.LastHealAction = ""
 	}
 

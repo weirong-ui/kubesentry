@@ -98,7 +98,7 @@ func TestUpdateStatus_ReadsRealReplicas(t *testing.T) {
 	}}
 
 	r := newTestReconciler(c)
-	if _, err := r.updateStatus(ctx, app, deploy, appsv1alpha1.PhaseStable, "", scalerNoopDecision()); err != nil {
+	if _, err := r.updateStatus(ctx, app, deploy, statusPatch{phase: appsv1alpha1.PhaseStable, decision: scalerNoopDecision()}); err != nil {
 		t.Fatalf("updateStatus: %v", err)
 	}
 
@@ -141,7 +141,7 @@ func TestUpdateStatus_AvailableWhenAllReady(t *testing.T) {
 	}}
 
 	r := newTestReconciler(c)
-	if _, err := r.updateStatus(ctx, app, deploy, appsv1alpha1.PhaseStable, "", scalerNoopDecision()); err != nil {
+	if _, err := r.updateStatus(ctx, app, deploy, statusPatch{phase: appsv1alpha1.PhaseStable, decision: scalerNoopDecision()}); err != nil {
 		t.Fatal(err)
 	}
 

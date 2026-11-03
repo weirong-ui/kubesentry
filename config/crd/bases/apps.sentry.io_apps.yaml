@@ -219,6 +219,9 @@ spec:
                   - type
                   type: object
                 type: array
+              currentImage:
+                description: CurrentImage 上一次 Reconcile 观察到的镜像，用于检测"镜像刚变更".
+                type: string
               currentReplicas:
                 description: |-
                   CurrentReplicas **就绪副本数**，取自 Deployment.status.readyReplicas。
@@ -231,6 +234,19 @@ spec:
                 type: integer
               lastHealAction:
                 description: LastHealAction 最近一次自愈动作描述.
+                type: string
+              lastHealAt:
+                description: LastHealAt 最近一次自愈动作时间，自愈冷却（观察期）的判断依据.
+                format: date-time
+                type: string
+              lastHealLevel:
+                description: |-
+                  LastHealLevel 最近一次自愈动作的等级（0=L1 扩容, 1=L2 摘除, 2=L3 回滚），
+                  升级路径的判断依据：冷却期内故障再现时升到下一级.
+                type: integer
+              lastImageChangeAt:
+                description: LastImageChangeAt 上一次镜像变更时间，金丝雀观察窗口的起点.
+                format: date-time
                 type: string
               lastScalingAt:
                 description: LastScalingAt 上一次伸缩动作时间，冷却窗口的判断依据.

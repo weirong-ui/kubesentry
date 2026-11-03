@@ -1,13 +1,15 @@
 # KubeSentry 实现状态（真实账本）
 
 > 本文件是**唯一可信的能力清单**。README 的一切对外描述以此为准，每完成一项就把状态改掉。
-> 最后更新：2026-11-02 深夜（P0 收尾完成）
+> 最后更新：2026-11-03 下午（P1 真实指标源演示 + P2 自愈引擎落地，均真集群验证）
 > 验收口径：代码能在干净集群上 `deploy → apply App → Available`，且有可复现的证据。
 
 ## 一、当前结论
 
-**P0 已闭环**：一条干净链路跑通了 —— `kubectl apply CR → 自动创建 Deployment + Service → status 反映真实就绪副本 → 写 Events`。
-尚未实现的是 P1 之后的**智能**部分（Prometheus 多信号伸缩、自愈、Webhook、mini-Informer），它们仍在下方三栏表里标 🗓。
+**P0/P1/P2 已闭环**：`apply CR → Deployment + Service → Available` 之外，两条"智能"链路都在真集群上跑通了——
+**弹性伸缩**（真实 Prometheus 按 Pod 抓取 + 500 QPS 打流 → 扩容 1→5 → 停流渐进缩回 1，见 [docs/demo/01-scaling.md](demo/01-scaling.md)）
+与**分级自愈**（CrashLoop 版本发布 → L2 摘除 → 冷却期内复发自动升级 L3 回滚 → 恢复；金丝雀窗口内错误率超阈值 → 20 秒内自动回滚，见 [docs/demo/02-self-healing.md](demo/02-self-healing.md)）。
+尚未实现的是 P3（Webhook）与 P4（mini-Informer）。
 
 ## 二、体检与验证结果（2026-11-02 实测）
 
@@ -16,7 +18,7 @@
 | `go build ./...` | ✅ | 通过（Go 1.27.3 本机，module `go 1.22.0`；k8s v0.31.1 / controller-runtime v0.19.0） |
 | `go vet ./...` | ✅ | 无输出 |
 | `gofmt -l` | ✅ | 无未格式化文件 |
-| `go test ./...` | ⚠️ | 通过但**用例数为 0**，等于没有测试（第 3 周补） |
+| `go test ./...` | ✅ | **57 个用例**全绿（scaler 23 + controller 8 + healer 26） |
 | 部署链路 | ✅ | Docker Desktop k8s v1.36.1：`kubectl apply` CRD+RBAC+Manager → 控制器 Pod `1/1 Running` |
 | 创建资源 | ✅ | `deployment.apps/sample 2/2`、`service/sample ClusterIP 80/TCP`、`endpoints 10.244.0.9,10.244.0.10` |
 | 状态真实性 | ✅ | `NAME sample PHASE Stable READY 2 DESIRED 2`；`status.conditions` 出现 `Available=True / Progressing=False` |
@@ -40,14 +42,14 @@
 | Finalizer 删除时序 | ✅ 已实现 | 添加/移除正确；删前导出审计仍是 TODO(P2) |
 | 迟滞带 + 缩容渐进算法 | ✅ 已实现 | 纯函数逻辑完整（含"缩回 minReplicas 不受迟滞约束""`ceil(0.2×current)` 缩不动"两个坑） |
 | 冷却窗口 | ✅ 已实现 | `LastScalingAt` 在 decision≠None 时写入；逻辑已被单测覆盖（冷却拦缩容、放行扩容、过期放行） |
-| Prometheus 多信号伸缩 | ✅ 已实现 | `internal/scaler/prometheus.go`：QPS（`rate` 换算副本）、P99（`histogram_quantile` 按比例扩）、错误率（超阈值扩 20%）；`--prometheus-url` 注入，不配则休眠。**已在真集群端到端验证**（2026-11-03，Docker Desktop k8s：假 Prometheus 供数 → 扩容 2→5 → 冷却窗口 120s 内拒绝缩容 → 窗口过期后渐进缩容 5→4，Events 全程留痕）；kube-prometheus-stack + hey 打流的演示视频待 11.08 |
-| 故障识别（CrashLoop / OOM / 5xx） | 🗓 规划中 | `Inspect` 仍返回 `Unhealthy:false`，P2 |
-| 分级自愈 L1→L2→L3 | 🗓 规划中 | `Apply` 仍返回 `nil,nil`，P2 |
-| 金丝雀观察 + 自动回滚 | 🗓 规划中 | `InCanaryWindow` / `CheckCanary` 恒 false，`Rollback` 返回 not implemented，P2 |
+| Prometheus 多信号伸缩 | ✅ 已实现 | `internal/scaler/prometheus.go`：QPS（`rate` 换算副本）、P99（`histogram_quantile` 按比例扩）、错误率（超阈值扩 20%）；`--prometheus-url`/`--prometheus-window` 注入，不配则休眠。**真实指标源端到端验证**（2026-11-03：集群内真实 Prometheus v2.54.1 按 Pod 抓取 + demoapp 打流 500 QPS → 扩 1→5，停流后渐进缩 5→1，全程 Events 留痕，实录见 [docs/demo/01-scaling.md](demo/01-scaling.md)） |
+| 故障识别（CrashLoop / OOM / 高频重启） | ✅ 已实现 | `Inspect` 按 Pod 标签列出实例，读 `containerStatuses[].state.waiting.reason` / `lastState.terminated.reason` / restartCount 兜底；有意忽略"别的 App 的 Pod"与"正在删除的 Pod"。**真集群验证**：crash 镜像发布后 ~2.5min 识别并动作 |
+| 分级自愈 L1→L2→L3 | ✅ 已实现 | L1 扩容 20%（受 maxReplicas 钳制）/ L2 删除不健康 Pod / L3 从 ReplicaSet 修订历史回滚镜像（改 App.spec，声明式收敛）。升级路径由 `status.lastHealLevel/lastHealAt` 驱动：冷却期内复发才升级；已到 L3 还在坏则进入观察。**真集群验证**：L2 摘除 → 复发 → 自动升 L3 → 回滚 → 2/2 恢复 |
+| 金丝雀观察 + 自动回滚 | ✅ 已实现 | 镜像变更写入 `status.lastImageChangeAt` 开窗；窗口内 `ErrSource.ErrorRate` 超阈值即回滚并关窗（防回滚死循环）。**真集群验证**：50% 错误率版本发布后 ~20s 自动回滚，`status.rollbackRevision=1` |
 | Admission Webhook | 🗓 规划中 | `internal/webhook/` 不存在，`cmd/main.go` 未注册，P3 |
 | mini-Informer | 🗓 规划中 | `pkg/miniinformer/` 不存在，P4（Dockerfile 已预留注释位） |
 | Helm Chart | 🗓 规划中 | `charts/` 不存在，第 3 周在 kustomize 之后再做 |
-| 单元 / envtest 测试 | 🚧 半成品 | **31 个用例**（scaler 23 + controller 8）全部通过：迟滞带 / 冷却 / ceil 缩容渐进 / 上下限 / 多信号取 max / 无数据不当 0 / status 读真实副本 / Finalizer 生命周期 / selector-label 一致性。envtest 待第 3 周 |
+| 单元测试 | ✅ 57 用例 | scaler 23 + controller 8 + healer 26（故障识别 / 分级升级路径 / 冷却期内不重复升级 / L3 后观察 / 回滚选版 / 金丝雀窗口与阈值边界 / 无数据不误回滚）。envtest 待第 3 周 |
 | 压测与 HPA 对比表 | 🗓 规划中 | 第 3 周 |
 
 ## 四、11.02 夜这一轮改了什么（P0 收尾）
@@ -84,7 +86,7 @@
 
 ## 五、已知噪音（不阻塞，待优化）
 
-- `ensureDeployment` 偶发 `the object has been modified` conflict：Deployment controller 改 status 与我们的 CreateOrUpdate 竞争。Reconcile 会退避重试并成功，但日志里留 ERROR + Warning Event，观感差。优化方向：对 `apierrors.IsConflict` 静默返回（不 emit event），或 CreateOrUpdate 失败后立刻重读一次。
+- `ensureDeployment` / 自愈回写偶发 `the object has been modified` conflict：Deployment controller 改 status 与我们的 CreateOrUpdate 竞争；11.03 P2 验证中 L3 回滚的 `Update(app)` 也撞上一次（下一轮回滚成功）。Reconcile 退避重试后自动恢复，但留 `KubeSentryError` 事件，观感差。优化方向：conflict 类错误不 emit Warning 事件，直接退避重试。
 
 ## 六、环境备忘（下次别再踩）
 
@@ -100,11 +102,12 @@
 
 ## 七、下一步（11.05 起）
 
-1. **P1 演示视频**：kube-prometheus-stack + hey 真实打流录 demo #1（逻辑已集群验证过，缺的是真实指标源与录屏）
-2. ~~P1 指标源~~：**已完成**（2026-11-03），见 `internal/scaler/prometheus.go`
-3. ~~单测~~：**已完成**（2026-11-03），31 个用例
-4. **P2 自愈**：`Inspect` 读 `containerStatuses[].state.waiting.reason == CrashLoopBackOff` 与 `lastState.terminated.reason == OOMKilled`
-5. **第 3 周**：envtest、Helm Chart、压测对比表
+1. ~~P1 指标源~~：**已完成**（2026-11-03），真实 Prometheus + 打流验证，实录 `docs/demo/01-scaling.md`
+2. ~~P2 自愈~~：**已完成**（2026-11-03），分级自愈 + 金丝雀回滚，实录 `docs/demo/02-self-healing.md`
+3. ~~单测~~：**已完成**（2026-11-03），57 个用例
+4. **P3 Admission Webhook**：校验（禁 latest、min≤max）+ 默认值注入（资源限制、安全上下文）——呼应 CKS 考点
+5. **P4 mini-Informer**：ListWatch + DeltaFIFO + WorkQueue 手写实现（面试高频）
+6. **第 3 周**：envtest、Helm Chart、压测对比表、把 P2 链路搬进 CI e2e
 
 ## 八、每日勾选
 
@@ -113,3 +116,4 @@
 | 2026-11-02 | 体检 + STATUS/README 账本 | 建立基线，暴露红线 |
 | 2026-11-02 夜 | P0 收尾（脚手架、Service、Status/Conditions、Events、CI） | 链路跑通：CR → Deploy+Service → Available |
 | 2026-11-03 | P1 指标源 + 31 个单测 + 真集群端到端验证 + 仓库描述/topics + GitHub 主页 README | 伸缩引擎从"休眠"到"集群验证过"；0 测试 → 31 用例；修掉 omitempty 结构体序列化 bug |
+| 2026-11-03 下午 | P1 真实指标源演示（真 Prometheus + 打流）+ P2 自愈引擎落地 + 26 个 healer 用例 | P1/P2 从"未验证"到"真集群跑通"；31 → 57 用例；踩到并修复"静态 Service 抓取导致 counter 非单调"的指标坑 |

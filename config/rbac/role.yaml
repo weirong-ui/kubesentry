@@ -37,6 +37,14 @@ rules:
   - update
   - watch
 - apiGroups:
+  - apps
+  resources:
+  - replicasets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - apps.sentry.io
   resources:
   - apps

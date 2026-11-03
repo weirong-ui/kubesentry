@@ -20,6 +20,7 @@ package main
 import (
 	"flag"
 	"os"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
@@ -55,6 +56,8 @@ func main() {
 	var enableLeaderElection bool
 	var probeAddr string
 	var promURL string
+	var promWindow string
+	var healCooldown time.Duration
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -64,6 +67,10 @@ func main() {
 	// 集群内常见值：http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
 	flag.StringVar(&promURL, "prometheus-url", os.Getenv("PROMETHEUS_URL"),
 		"Prometheus Query API endpoint; scaling stays dormant when empty.")
+	flag.StringVar(&promWindow, "prometheus-window", "5m",
+		"PromQL rate window for scaling/canary queries (demo 用 1m 反应更快).")
+	flag.DurationVar(&healCooldown, "heal-cooldown", 3*time.Minute,
+		"Observation period between graduated self-heal actions; same fault within this window escalates the level.")
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -83,9 +90,15 @@ func main() {
 	}
 
 	scaleEngine := scaler.NewEngine()
+	healEngine := healer.NewEngine()
+	healEngine.HealCooldown = healCooldown
 	if promURL != "" {
-		scaleEngine.WithMetricsSource(scaler.NewPrometheusSource(promURL))
-		setupLog.Info("scaling enabled", "prometheus", promURL)
+		promSource := scaler.NewPrometheusSource(promURL)
+		promSource.Window = promWindow
+		scaleEngine.WithMetricsSource(promSource)
+		// 同一个源同时给金丝雀回滚提供错误率（5xx 占比）
+		healEngine.ErrSource = promSource
+		setupLog.Info("scaling & canary enabled", "prometheus", promURL, "window", promWindow)
 	} else {
 		setupLog.Info("scaling dormant: no --prometheus-url configured")
 	}
@@ -94,7 +107,7 @@ func main() {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Scaler:   scaleEngine,
-		Healer:   healer.NewEngine(),
+		Healer:   healEngine,
 		Recorder: mgr.GetEventRecorderFor("kubesentry"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "App")

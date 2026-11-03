@@ -74,6 +74,20 @@ func (p *PrometheusSource) WithQuery(t appsv1alpha1.MetricType, promQL string) *
 	return p
 }
 
+// ErrorRate 实现 healer.ErrorRateSource：返回当前 5xx 错误率（0~1）。
+// 查询失败/无数据返回 ok=false —— 金丝雀检查"宁可放过，绝不误回滚"。
+func (p *PrometheusSource) ErrorRate(ctx context.Context, app *appsv1alpha1.App) (float64, bool) {
+	tmpl, ok := p.Queries[appsv1alpha1.MetricErrorRate]
+	if !ok {
+		return 0, false
+	}
+	val, ok, err := p.queryScalar(ctx, p.render(tmpl, app))
+	if err != nil || !ok {
+		return 0, false
+	}
+	return val, true
+}
+
 // DesiredReplicas 计算该指标下"应该"有多少副本。
 //
 // 设计约定（很重要）：**每个信号只在"不满意"时才有意见**。
@@ -102,9 +116,12 @@ func (p *PrometheusSource) DesiredReplicas(ctx context.Context, app *appsv1alpha
 
 	switch target.Type {
 	case appsv1alpha1.MetricQPS:
-		// desired = ceil(总 QPS / 单 Pod 目标 QPS)
+		// desired = ceil(总 QPS / 单 Pod 目标 QPS)。
+		// 注意区分两种"0"：查询成功且值为 0（真实零流量 → 明确缩到 1，由
+		// Decide 钳制到 minReplicas）与无数据/查询失败（ok=false 弃权）。
+		// 若把真实零流量也当弃权，应用在流量退去后将永远缩不回去。
 		if val <= 0 {
-			return 0, false // 没有流量，交给 minReplicas
+			return 1, true
 		}
 		return int32(math.Ceil(val / targetVal)), true
 

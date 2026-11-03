@@ -167,6 +167,23 @@ type AppStatus struct {
 	// +optional
 	LastHealAction string `json:"lastHealAction,omitempty"`
 
+	// LastHealLevel 最近一次自愈动作的等级（0=L1 扩容, 1=L2 摘除, 2=L3 回滚），
+	// 升级路径的判断依据：冷却期内故障再现时升到下一级.
+	// +optional
+	LastHealLevel int `json:"lastHealLevel,omitempty"`
+
+	// LastHealAt 最近一次自愈动作时间，自愈冷却（观察期）的判断依据.
+	// +optional
+	LastHealAt *metav1.Time `json:"lastHealAt,omitempty"`
+
+	// CurrentImage 上一次 Reconcile 观察到的镜像，用于检测"镜像刚变更".
+	// +optional
+	CurrentImage string `json:"currentImage,omitempty"`
+
+	// LastImageChangeAt 上一次镜像变更时间，金丝雀观察窗口的起点.
+	// +optional
+	LastImageChangeAt *metav1.Time `json:"lastImageChangeAt,omitempty"`
+
 	// RollbackRevision 若发生过回滚，记录回滚到的版本.
 	// +optional
 	RollbackRevision int64 `json:"rollbackRevision,omitempty"`

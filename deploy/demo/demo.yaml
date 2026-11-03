@@ -1,0 +1,160 @@
+# P1 演示：真实 Prometheus 抓取 + 打流驱动的弹性伸缩。
+# 用法：kubectl apply -f deploy/demo/ ，详见 docs/demo/01-scaling.md
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+---
+# pod 服务发现需要 list/watch pods 权限（最小范围：仅 demo 命名空间）
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: demo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prometheus
+  namespace: demo
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prometheus
+  namespace: demo
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+roleRef:
+  kind: Role
+  name: prometheus
+  apiGroup: rbac.authorization.k8s.io
+---
+# 最小可用 Prometheus：按 Pod 逐个抓 demo 命名空间里 KubeSentry 托管的 demoapp。
+# 不是生产部署（无持久化、无 HA），仅为演示"真实指标源"这一件事。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: demo
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 5s
+      evaluation_interval: 5s
+    scrape_configs:
+      # 必须按 Pod 逐个抓：之前用静态 Service 地址，每次抓取被 kube-proxy
+      # 随机路由到不同后端，counter 非单调，rate() 算出来是错的。
+      - job_name: demoapp
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [demo]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_managed_by]
+            regex: kubesentry
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_container_port_name]
+            regex: http
+            action: keep
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: demo
+  labels:
+    app.kubernetes.io/name: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: prometheus
+    spec:
+      serviceAccountName: prometheus
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.54.1
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.retention.time=1h
+          ports:
+            - name: http
+              containerPort: 9090
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: demo
+spec:
+  selector:
+    app.kubernetes.io/name: prometheus
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
+---
+# 受管应用：KubeSentry 依据 scaledemo 的 QPS 伸缩（每 Pod 目标 100 QPS）。
+# 注意 metadata.name 必须与 demoapp 指标的 app 标签一致（KubeSentry 会注入
+# APP_NAME 环境变量，二者天然对齐）。
+apiVersion: apps.sentry.io/v1alpha1
+kind: App
+metadata:
+  name: scaledemo
+  namespace: demo
+spec:
+  image: kubesentry-demoapp:v1
+  replicas: 1
+  port: 8080
+  scaling:
+    minReplicas: 1
+    maxReplicas: 8
+    cooldownSeconds: 30 # 演示用小窗口，生产建议 120+
+    metrics:
+      - type: QPS
+        target: "100"
+---
+# 负载发生器：同一个 demoapp 二进制的 -loadgen 模式。
+# 改变 --qps 或 replicas=0（停流）即可观察扩容/缩容。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen
+  namespace: demo
+spec:
+  replicas: 0 # 默认停流；kubectl scale deploy/loadgen -n demo --replicas=1 开始打流
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: loadgen
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: loadgen
+    spec:
+      containers:
+        - name: loadgen
+          image: kubesentry-demoapp:v1
+          imagePullPolicy: IfNotPresent
+          args: ["-loadgen", "http://scaledemo.demo.svc:8080", "-qps", "500"]
