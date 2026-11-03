@@ -1,18 +1,18 @@
-# KubeSentry — 云原生应用自愈与智能弹性伸缩 Operator
+# KubeStasis — 云原生应用自愈与智能弹性伸缩 Operator
 
 <p align="center">
-  <img src="docs/assets/architecture.png" alt="KubeSentry 架构总览" width="880"/>
+  <img src="docs/assets/architecture.png" alt="KubeStasis 架构总览" width="880"/>
 </p>
 
 [![Go Version](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go)](https://go.dev)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.28%2B-326CE5?logo=kubernetes)](https://kubernetes.io)
-[![CI](https://github.com/weirong-ui/kubesentry/actions/workflows/ci.yml/badge.svg)](https://github.com/weirong-ui/kubesentry/actions/workflows/ci.yml)
+[![CI](https://github.com/weirong-ui/kubestasis/actions/workflows/ci.yml/badge.svg)](https://github.com/weirong-ui/kubestasis/actions/workflows/ci.yml)
 [![Tests](https://img.shields.io/badge/tests-57%20cases-brightgreen)](#开发)
 [![License](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
 > 一个基于 controller-runtime 的 Kubernetes Operator：不只让应用"活着"，还能让它**自己变强、自己疗伤**。
 > 项目配套的系列文章发布在掘金（[作者主页](https://juejin.cn/user/1835559210983642)）：
-> 1. [HPA 只会伸缩不会自愈？我设计了一个 K8s 应用自愈 Operator：KubeSentry](https://juejin.cn/post/7702723478470852646)
+> 1. [HPA 只会伸缩不会自愈？我设计了一个 K8s 应用自愈 Operator：KubeStasis](https://juejin.cn/post/7702723478470852646)
 > 2. [从零写一个 K8s Operator：kubebuilder 初始化到第一个 Reconcile](https://juejin.cn/post/7703105289100951561)
 
 ## 实现状态
@@ -46,7 +46,7 @@
 
 Kubernetes 原生的 HPA 只解决"伸缩"，不解决"自愈"。下表是**目标态设计对比**，非当前实现（实现进度见上方状态表）：
 
-| 能力 | HPA | KEDA | KubeSentry（目标） |
+| 能力 | HPA | KEDA | KubeStasis（目标） |
 |---|---|---|---|
 | 基于指标扩缩容 | ✅（CPU/内存） | ✅（多指标源） | 目标：QPS / P99 延迟 / 错误率 |
 | 自定义伸缩策略（冷却窗口、震荡抑制） | ⚠️ 有限 | ⚠️ | 目标：内置迟滞算法 |
@@ -69,7 +69,7 @@ Kubernetes 原生的 HPA 只解决"伸缩"，不解决"自愈"。下表是**目�
 flowchart LR
     User([开发者]) -->|kubectl apply App CR| API[Kubernetes API Server]
     API --> WH[Admission Webhook<br/>校验 + 默认值]
-    subgraph KubeSentry
+    subgraph KubeStasis
         C[App Controller<br/>Reconcile Loop]
         S[Scaler<br/>多信号伸缩决策]
         H[Healer<br/>故障自愈引擎]
@@ -89,14 +89,14 @@ flowchart LR
 
 ```bash
 # 1. 构建镜像（国内网络追加注释里的 build-arg）
-docker build -t kubesentry:dev .
+docker build -t kubestasis:dev .
 #   --build-arg GOPROXY=https://goproxy.cn,direct \
 #   --build-arg RUNTIME_IMAGE=m.daocloud.io/gcr.io/distroless/static-debian12:nonroot
 
 # 2. 部署 CRD + RBAC + Manager
-make deploy IMG=kubesentry:dev
+make deploy IMG=kubestasis:dev
 # 没有 make 的机器（如 Windows）用等价命令：
-#   kubectl kustomize config/default | sed 's|IMG_PLACEHOLDER|kubesentry:dev|g' | kubectl apply -f -
+#   kubectl kustomize config/default | sed 's|IMG_PLACEHOLDER|kubestasis:dev|g' | kubectl apply -f -
 
 # 3. 创建一个受管应用
 kubectl apply -f config/samples/app_v1alpha1_app.yaml
@@ -104,10 +104,10 @@ kubectl apply -f config/samples/app_v1alpha1_app.yaml
 # 4.（可选）启用 P1 伸缩：解开 config/manager/manager.yaml 里 --prometheus-url 的注释
 #    并指向集群内 Prometheus，重新 deploy；不配则伸缩休眠，其余功能不受影响
 
-# 5. 观察 KubeSentry 的决策过程
+# 5. 观察 KubeStasis 的决策过程
 kubectl get app sample -w
-kubectl get deploy,svc -l app.kubernetes.io/managed-by=kubesentry
-kubectl get events --field-selector reason=KubeSentryScaleUp
+kubectl get deploy,svc -l app.kubernetes.io/managed-by=kubestasis
+kubectl get events --field-selector reason=KubeStasisScaleUp
 ```
 
 预期输出：
@@ -156,7 +156,7 @@ spec:
 标 `*` 的目录尚未创建，随对应里程碑落地。
 
 ```
-kubesentry/
+kubestasis/
 ├── api/v1alpha1/          # App CRD 类型定义 + DeepCopy
 ├── cmd/                   # 入口：manager（webhook 待 P3 并入）/ demoapp（演示负载）
 ├── internal/
@@ -172,7 +172,7 @@ kubesentry/
 │   ├── manager/           # Manager Deployment
 │   ├── default/           # kustomize 入口（make deploy 用）
 │   └── samples/           # 示例 App CR
-├── charts/kubesentry/ *   # Helm Chart（第 3 周）
+├── charts/kubestasis/ *   # Helm Chart（第 3 周）
 ├── hack/                  # boilerplate 等代码生成辅助
 └── docs/                  # 设计文档、状态账本、系列文章素材
 ```
@@ -193,7 +193,7 @@ gofmt -l ./api ./cmd ./internal && go vet ./...
 go test ./... -cover
 
 # 构建镜像（多阶段 + distroless）
-make docker-build IMG=kubesentry:dev
+make docker-build IMG=kubestasis:dev
 ```
 
 > Windows 上没有 `make` 时，直接执行 Makefile 里对应目标的命令即可（`make manifests` 等价于 `go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.16.5 ...`）。

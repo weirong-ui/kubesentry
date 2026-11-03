@@ -1,0 +1,9 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# manifests.yaml 由 controller-gen 生成（make manifests）。
+# namePrefix 会把 webhook configurations 里 clientConfig.service.name 一并改写，
+# 因此 service.yaml 里写原始名 webhook-service 即可，无需手工对齐。
+namePrefix: kubestasis-
+resources:
+  - manifests.yaml
+  - service.yaml

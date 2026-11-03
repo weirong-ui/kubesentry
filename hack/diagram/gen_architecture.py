@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""生成 KubeSentry 架构图（docs/assets/architecture.png）。
+"""生成 KubeStasis 架构图（docs/assets/architecture.png）。
 
 用法：
     python hack/diagram/gen_architecture.py
@@ -128,7 +128,7 @@ def arrow(x1, y1, x2, y2, color, width=2, head=10, dashed=False, both=False):
 
 
 # ---------------- 标题区 ----------------
-text(60, 38, "KubeSentry 架构总览", 36, INK, bold=True)
+text(60, 38, "KubeStasis 架构总览", 36, INK, bold=True)
 text(62, 92, "Go 1.22 + controller-runtime · 云原生应用自愈与智能弹性伸缩 Operator", 17, BODY)
 
 # 图例
@@ -167,7 +167,7 @@ text(430, 306, "准入请求", 11.5, MUTED, anchor="lm")
 
 # ---------------- Operator 容器 ----------------
 dashed_box(620, 230, 520, 470, "#FAFBFF", BLUE, radius=18, dash=11, gap=7)
-text(648, 250, "KubeSentry Operator", 18, INK, bold=True)
+text(648, 250, "KubeStasis Operator", 18, INK, bold=True)
 text(1116, 256, "controller-runtime", 11.5, MUTED, anchor="ra")
 
 box(645, 292, 470, 84, "#DEEAFF", BLUE, radius=12)
@@ -245,7 +245,7 @@ for i, (title, desc, fill, bd) in enumerate(chips):
         arrow(cx + 234, 860, cx + 258, 860, SLATE_BD, width=1.8, head=8)
     cx += 260
 
-text(60, 916, "github.com/weirong-ui/kubesentry", 12, MUTED)
+text(60, 916, "github.com/weirong-ui/kubestasis", 12, MUTED)
 text(1540, 916, "掘金系列 · 手写一个 K8s Operator", 12, MUTED, anchor="ra")
 
 # ---------------- 降采样输出 ----------------

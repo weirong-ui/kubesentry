@@ -1,4 +1,4 @@
-module github.com/weirong-ui/kubesentry
+module github.com/weirong-ui/kubestasis
 
 go 1.22.0
 

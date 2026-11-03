@@ -3,7 +3,7 @@ kind: App
 metadata:
   name: sample
   labels:
-    app.kubernetes.io/name: kubesentry
+    app.kubernetes.io/name: kubestasis
 spec:
   image: nginx:1.27-alpine
   replicas: 2

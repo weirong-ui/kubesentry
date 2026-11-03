@@ -1,6 +1,8 @@
 # 从零写一个 K8s Operator：kubebuilder 初始化到第一个 Reconcile
 
-> 本系列第一篇[《HPA 只会伸缩不会自愈？我设计了一个 K8s 应用自愈 Operator》](https://juejin.cn/post/7702723478470852646)讲清楚了 KubeSentry 的整体设计。本篇开始动手：从 `kubebuilder init` 开始，一步步写出第一个能跑的 Reconcile 循环，并用 envtest 给它写上测试。跟着做完，你就拥有了一个自己的 Operator 骨架。
+> **更名说明**：本项目原名 **KubeSentry**，自 2026-11-03 起更名 **KubeStasis**（避免与既有项目重名）。文章正文中如出现旧名，指的都是同一个项目；代码仓库现为 github.com/weirong-ui/kubestasis。
+
+> 本系列第一篇[《HPA 只会伸缩不会自愈？我设计了一个 K8s 应用自愈 Operator》](https://juejin.cn/post/7702723478470852646)讲清楚了 KubeStasis 的整体设计。本篇开始动手：从 `kubebuilder init` 开始，一步步写出第一个能跑的 Reconcile 循环，并用 envtest 给它写上测试。跟着做完，你就拥有了一个自己的 Operator 骨架。
 
 ## 一、准备环境
 
@@ -15,7 +17,7 @@
 
 ```bash
 # 初始化项目：--domain 是 CRD 的 API group 后缀，--repo 是 module 路径
-kubebuilder init --domain sentry.io --repo github.com/weirong-ui/kubesentry
+kubebuilder init --domain sentry.io --repo github.com/weirong-ui/kubestasis
 
 # 创建 API：同时生成 CRD（--resource）和控制器（--controller）
 kubebuilder create api --group apps --version v1alpha1 --kind App --resource --controller
@@ -26,7 +28,7 @@ kubebuilder create api --group apps --version v1alpha1 --kind App --resource --c
 生成的骨架长这样：
 
 ```
-kubesentry/
+kubestasis/
 ├── api/v1alpha1/
 │   ├── groupversion_info.go   # GVK 注册（Group=apps.sentry.io Version=v1alpha1）
 │   ├── app_types.go           # CRD 的 Spec/Status 定义
@@ -48,7 +50,7 @@ mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
     Scheme:                 scheme,
     HealthProbeBindAddress: probeAddr,
     LeaderElection:         enableLeaderElection,
-    LeaderElectionID:       "kubesentry.sentry.io",
+    LeaderElectionID:       "kubestasis.sentry.io",
 })
 
 if err := (&controller.AppReconciler{
@@ -114,7 +116,7 @@ type App struct {
 
 ## 四、第一个 Reconcile：把 App 变成 Deployment
 
-Reconciler 的全部工作只有一个函数：`Reconcile(ctx, req)`。KubeSentry P0 版的核心逻辑：
+Reconciler 的全部工作只有一个函数：`Reconcile(ctx, req)`。KubeStasis P0 版的核心逻辑：
 
 ```go
 func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -177,7 +179,7 @@ _, err := controllerutil.CreateOrUpdate(ctx, r.Client, want, func() error {
 
 **坑 3：Status 更新又触发自己 → 无限 Reconcile。** 如果把 Status 写进 Spec 更新（没用 `/status` 子资源），或者 Status 内容每次都在变（比如写了个时间戳），就会自己触发自己，死循环到 QPS 爆炸。对策：Status 永远走 `r.Status().Patch()`，且内容只有在变化时才写。
 
-**坑 4：忘了 Finalizer。** 没有它，App 删了对应的 Deployment 会被 OwnerReference 级联删掉——看起来没问题，但未来 KubeSentry 要在删除前导出自愈审计记录，就必须有 Finalizer 挡一道。**Finalizer 里忘了 `RemoveFinalizer` 的话对象永远删不掉**，这是 Operator 生产事故 Top3。
+**坑 4：忘了 Finalizer。** 没有它，App 删了对应的 Deployment 会被 OwnerReference 级联删掉——看起来没问题，但未来 KubeStasis 要在删除前导出自愈审计记录，就必须有 Finalizer 挡一道。**Finalizer 里忘了 `RemoveFinalizer` 的话对象永远删不掉**，这是 Operator 生产事故 Top3。
 
 ### Owns 与 OwnerReference
 
@@ -231,14 +233,14 @@ make run                          # 本地跑 Operator（连 kind）
 kubectl apply -f config/samples/app_v1alpha1_app.yaml
 kubectl get deploy -w
 # NAME    READY   UP-TO-DATE   AVAILABLE
-# sample  2/2     2            2          ← KubeSentry 创建的
+# sample  2/2     2            2          ← KubeStasis 创建的
 
 # 手动改副本数，看它被"掰"回来：
 kubectl scale deploy sample --replicas=10
 # 一瞬间又回到 2 —— Owns + level-triggered 在工作
 ```
 
-到这里，P0 里程碑完成：一个有 CRD、有幂等 Reconcile、有 Finalizer、有测试的 Operator 骨架。代码都在 [github.com/weirong-ui/kubesentry](https://github.com/weirong-ui/kubesentry)（P0 标签）。
+到这里，P0 里程碑完成：一个有 CRD、有幂等 Reconcile、有 Finalizer、有测试的 Operator 骨架。代码都在 [github.com/weirong-ui/kubestasis](https://github.com/weirong-ui/kubestasis)（P0 标签）。
 
 ## 七、下一篇预告
 

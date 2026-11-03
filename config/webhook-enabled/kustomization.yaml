@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# 带 Admission Webhook 的部署形态（P3）。
+# 与 ../default 的差别：manager 开启 --enable-webhook 并挂载 TLS 证书，
+# 额外创建 webhook Service 与 Mutating/ValidatingWebhookConfiguration。
+# 证书不在 kustomize 里：apply 之后由 hack/webhook-certs.sh 生成自签证书、
+# 创建 Secret 并给两个 WebhookConfiguration 注入 caBundle（make deploy-webhook 一条龙）。
+namespace: kubestasis-system
+resources:
+  - ../default
+  - ../webhook
+patches:
+  - path: manager_webhook_patch.yaml

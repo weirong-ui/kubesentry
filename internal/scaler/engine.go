@@ -29,9 +29,10 @@ import (
 	"math"
 	"time"
 
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	appsv1alpha1 "github.com/weirong-ui/kubesentry/api/v1alpha1"
+	appsv1alpha1 "github.com/weirong-ui/kubestasis/api/v1alpha1"
 )
 
 type Action string
@@ -133,8 +134,8 @@ func (e *Engine) Decide(ctx context.Context, app *appsv1alpha1.App, nowFn func()
 		desired = policy.MaxReplicas
 	}
 
-	// 迟滞带：差值太小不动
-	hysteresis := int32(math.Max(1, float64(current)*0.1))
+	// 迟滞带：差值太小不动（比例 CRD 可配，默认 10%）
+	hysteresis := int32(math.Max(1, float64(current)*float64(policy.Hysteresis())/100))
 	withinBand := desired-current <= hysteresis && current-desired <= hysteresis
 	// 例外：回落到 minReplicas 不受迟滞带约束，否则 3 副本时永远缩不回 2
 	backToMin := desired == policy.MinReplicas && current > policy.MinReplicas
@@ -148,10 +149,10 @@ func (e *Engine) Decide(ctx context.Context, app *appsv1alpha1.App, nowFn func()
 			Reason: "scale down blocked by cooldown window", Signals: signals}
 	}
 
-	// 缩容渐进：单次最多减 20%，且至少减 1 个。
-	// 注意不能写成 ceil(current*0.8)：current=2/3/4 时 ceil 回到原值，永远缩不下去。
+	// 缩容渐进：单次最多减 scaleDownStepPercent%（默认 20%），且至少减 1 个。
+	// 注意不能写成 ceil(current*(1-p))：current=2/3/4 时 ceil 回到原值，永远缩不下去。
 	if desired < current {
-		step := int32(math.Ceil(float64(current) * 0.2))
+		step := int32(math.Ceil(float64(current) * float64(policy.ScaleDownStep()) / 100))
 		if step < 1 {
 			step = 1
 		}
@@ -189,9 +190,22 @@ func (e *Engine) Apply(ctx context.Context, c client.Client, app *appsv1alpha1.A
 		return nil
 	}
 	target := d.ToReplicas
-	app.Spec.Replicas = &target
-	if err := c.Update(ctx, app); err != nil {
+	// 冲突重试 + Merge Patch：本轮 Reconcile 之前，status 回写/他方控制器可能
+	// 已经动过这个 App，直接 Update 手头这份旧 resourceVersion 会撞
+	// "the object has been modified"。真实故障场景下这类竞争更密集，
+	// 正确姿势是每次重试都重新 Get 最新版本再 Patch。
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &appsv1alpha1.App{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(app), latest); err != nil {
+			return err
+		}
+		patch := client.MergeFrom(latest.DeepCopy())
+		latest.Spec.Replicas = &target
+		return c.Patch(ctx, latest, patch)
+	}); err != nil {
 		return fmt.Errorf("write back replicas %d->%d: %w", d.FromReplicas, target, err)
 	}
+	// 同步给调用方：本轮 updateStatus 要用新期望值计算 DesiredReplicas
+	app.Spec.Replicas = &target
 	return nil
 }

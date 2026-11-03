@@ -14,12 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// demoapp 是 KubeSentry 的演示负载：一个暴露 Prometheus 指标的最小 HTTP 服务。
+// demoapp 是 KubeStasis 的演示负载：一个暴露 Prometheus 指标的最小 HTTP 服务。
 //
 // 设计取舍：
 //   - 不引 client_golang：/metrics 就是几行文本，手写文本格式零依赖，
 //     镜像里少一层 supply chain
-//   - 指标标签 app=/namespace= 来自 KubeSentry 注入的 APP_NAME/POD_NAMESPACE
+//   - 指标标签 app=/namespace= 来自 KubeStasis 注入的 APP_NAME/POD_NAMESPACE
 //     环境变量，与 internal/scaler/prometheus.go 的 PromQL 模板约定一致
 //   - -crash 模式用于构建 crashloop 镜像，验证自愈引擎
 //   - -loadgen 模式把同一个二进制变成负载发生器，demo 少维护一个镜像

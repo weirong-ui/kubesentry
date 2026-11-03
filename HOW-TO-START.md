@@ -1,11 +1,11 @@
-# KubeSentry — 如何用这套材料起步
+# KubeStasis — 如何用这套材料起步
 
-> 这份文档告诉你：拿到 `kubesentry/` 目录后，怎么一步步变成一个真实可运行、可写进简历的 GitHub 项目。
+> 这份文档告诉你：拿到 `kubestasis/` 目录后，怎么一步步变成一个真实可运行、可写进简历的 GitHub 项目。
 
 ## 0. 你拿到了什么
 
 ```
-kubesentry/
+kubestasis/
 ├── README.md                     # GitHub 仓库首页（改 weirong-ui 后直接用）
 ├── docs/
 │   ├── DESIGN.md                 # 详细设计文档（也是掘金文章 1 的素材库）
@@ -29,7 +29,7 @@ kubesentry/
 
 ```bash
 # 1. 用 kubebuilder 生成标准脚手架
-kubebuilder init --domain sentry.io --repo github.com/weirong-ui/kubesentry
+kubebuilder init --domain sentry.io --repo github.com/weirong-ui/kubestasis
 kubebuilder create api --group apps --version v1alpha1 --kind App --resource --controller
 
 # 2. 用我给你的文件覆盖对应位置：
@@ -51,8 +51,8 @@ kubectl get deploy -w   # 应该看到 sample Deployment 被创建
 ## 2. 建仓库 + 开 CI（第 2 天）
 
 ```bash
-git init && git add . && git commit -m "feat: KubeSentry P0 skeleton"
-gh repo create kubesentry --public --push
+git init && git add . && git commit -m "feat: KubeStasis P0 skeleton"
+gh repo create kubestasis --public --push
 ```
 
 - CI 文件已写好：lint → test（envtest）→ e2e（kind 集群冒烟）→ 镜像发布（GHCR，多架构）

@@ -1,4 +1,4 @@
-# KubeSentry 设计文档
+# KubeStasis 设计文档
 
 > 版本：v1.0 ｜ 状态：设计中 → 实现 ｜ 作者：weirong
 
@@ -11,7 +11,7 @@ Kubernetes 提供的弹性能力（HPA/VPA）本质是**单信号、无记忆**�
 1. **震荡**：流量尖峰 → 疯狂扩容 → 流量回落 → 缩容 → 再来一次。没有冷却窗口和迟滞机制的伸缩是慢性自杀。
 2. **故障不自愈**：新版本发布后 5xx 飙升，值班同学半夜手动 `kubectl rollout undo`。Pod 层面的自愈（kubelet 重启容器）解决不了"版本坏"这种 Pod 重启一百次也没用的问题。
 
-KubeSentry 的目标：**用 Operator 模式把"伸缩决策"和"故障自愈"声明式地交给集群自己完成**。
+KubeStasis 的目标：**用 Operator 模式把"伸缩决策"和"故障自愈"声明式地交给集群自己完成**。
 
 ## 2. 目标与非目标
 
@@ -24,7 +24,7 @@ KubeSentry 的目标：**用 Operator 模式把"伸缩决策"和"故障自愈"�
 - G6：envtest 单元测试覆盖率 ≥ 70%，GitHub Actions 全自动 CI
 
 **非目标**
-- 不替代 HPA/KEDA（可以共存，KubeSentry 管自愈，HPA 管容量）
+- 不替代 HPA/KEDA（可以共存，KubeStasis 管自愈，HPA 管容量）
 - 不做通用 PaaS（不管理数据库中间件等有状态服务的运维语义）
 - P0~P4 不引入 eBPF（P5 再考虑无侵入采集）
 
@@ -131,7 +131,7 @@ desired = max(各信号 desired, minReplicas)，且 ≤ maxReplicas
 | 5xx 错误率飙升 | Prometheus 查询 | ✅ | ✅ | ✅ |
 | P99 突增 | Prometheus 查询 | ✅ | — | — |
 
-分级原则：**每次 Reconcile 只执行一级动作，观测一个窗口（观察期）后再升级**，避免"扩容+回滚"同时发生导致事故现场被破坏。所有动作 Emit Event（reason 统一前缀 `KubeSentry*`）并写回 Status。
+分级原则：**每次 Reconcile 只执行一级动作，观测一个窗口（观察期）后再升级**，避免"扩容+回滚"同时发生导致事故现场被破坏。所有动作 Emit Event（reason 统一前缀 `KubeStasis*`）并写回 Status。
 
 ### 4.4 Admission Webhook
 

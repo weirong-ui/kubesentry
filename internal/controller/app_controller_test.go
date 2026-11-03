@@ -31,9 +31,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	appsv1alpha1 "github.com/weirong-ui/kubesentry/api/v1alpha1"
-	"github.com/weirong-ui/kubesentry/internal/healer"
-	"github.com/weirong-ui/kubesentry/internal/scaler"
+	appsv1alpha1 "github.com/weirong-ui/kubestasis/api/v1alpha1"
+	"github.com/weirong-ui/kubestasis/internal/healer"
+	"github.com/weirong-ui/kubestasis/internal/scaler"
 )
 
 func reconcileReq(name string) ctrl.Request {
@@ -177,10 +177,10 @@ func TestEnsureDeployment_SetsOwnerAndLabels(t *testing.T) {
 	if len(deploy.OwnerReferences) != 1 || deploy.OwnerReferences[0].Kind != "App" {
 		t.Errorf("ownerReference not set: %+v", deploy.OwnerReferences)
 	}
-	if deploy.Labels[labelManagedBy] != "kubesentry" {
+	if deploy.Labels[labelManagedBy] != "kubestasis" {
 		t.Errorf("deployment missing managed-by label: %v", deploy.Labels)
 	}
-	if deploy.Spec.Template.Labels[labelManagedBy] != "kubesentry" {
+	if deploy.Spec.Template.Labels[labelManagedBy] != "kubestasis" {
 		t.Errorf("pod template missing managed-by label: %v", deploy.Spec.Template.Labels)
 	}
 	if *deploy.Spec.Replicas != 2 {

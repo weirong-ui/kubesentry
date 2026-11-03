@@ -10,10 +10,10 @@
 loadgen (-loadgen -qps 500)
    │  HTTP
    ▼
-Service scaledemo ──► demoapp Pod × N   （KubeSentry App CR 管理）
+Service scaledemo ──► demoapp Pod × N   （KubeStasis App CR 管理）
                           ▲ /metrics
                           │ 每 5s 抓取（按 Pod 逐个抓）
-                     Prometheus ──► KubeSentry（rate[1m] 查 QPS）
+                     Prometheus ──► KubeStasis（rate[1m] 查 QPS）
 ```
 
 **为什么必须按 Pod 逐个抓**：最初用静态配置抓 Service 的 ClusterIP，每次抓取被
@@ -32,8 +32,8 @@ kubectl apply -f deploy/demo/demo.yaml          # Prometheus + App(scaledemo) + 
 
 ```
 T+0    loadgen --replicas=1（500 QPS）
-T+90s  实测 QPS 406（rate[1m] 爬坡中）→ 事件: KubeSentryScaleUp "ScaleUp: 1 -> 3 (load above targets)"
-T+106s 事件: KubeSentryScaleUp "ScaleUp: 3 -> 5 (load above targets)"
+T+90s  实测 QPS 406（rate[1m] 爬坡中）→ 事件: KubeStasisScaleUp "ScaleUp: 1 -> 3 (load above targets)"
+T+106s 事件: KubeStasisScaleUp "ScaleUp: 3 -> 5 (load above targets)"
 T+107s scaledemo 5/5 Ready，Stable
 ```
 
@@ -41,7 +41,7 @@ T+107s scaledemo 5/5 Ready，Stable
 
 ```
 T+0    loadgen --replicas=0
-T+50s  5 -> 4   KubeSentryScaleDown "ScaleDown: 5 -> 4 (load below targets)"
+T+50s  5 -> 4   KubeStasisScaleDown "ScaleDown: 5 -> 4 (load below targets)"
 T+100s 4 -> 3 → 3 -> 2（每 30s 一级，冷却窗口约束）
 T+150s 2 -> 1，收敛到 minReplicas=1
 ```
@@ -49,12 +49,12 @@ T+150s 2 -> 1，收敛到 minReplicas=1
 事件流（`kubectl get events --field-selector involvedObject.name=scaledemo`）：
 
 ```
-09:15:04  KubeSentryScaleUp    ScaleUp: 1 -> 3 (load above targets)
-09:15:20  KubeSentryScaleUp    ScaleUp: 3 -> 5 (load above targets)
-09:16:50  KubeSentryScaleDown  ScaleDown: 5 -> 4 (load below targets)
-09:17:20  KubeSentryScaleDown  ScaleDown: 4 -> 3 (load below targets)
-09:17:50  KubeSentryScaleDown  ScaleDown: 3 -> 2 (load below targets)
-09:18:20  KubeSentryScaleDown  ScaleDown: 2 -> 1 (load below targets)
+09:15:04  KubeStasisScaleUp    ScaleUp: 1 -> 3 (load above targets)
+09:15:20  KubeStasisScaleUp    ScaleUp: 3 -> 5 (load above targets)
+09:16:50  KubeStasisScaleDown  ScaleDown: 5 -> 4 (load below targets)
+09:17:20  KubeStasisScaleDown  ScaleDown: 4 -> 3 (load below targets)
+09:17:50  KubeStasisScaleDown  ScaleDown: 3 -> 2 (load below targets)
+09:18:20  KubeStasisScaleDown  ScaleDown: 2 -> 1 (load below targets)
 ```
 
 ## 这个演示证明了什么

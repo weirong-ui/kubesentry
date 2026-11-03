@@ -1,19 +1,19 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: kubesentry-system
+  name: kubestasis-system
   labels:
     control-plane: controller-manager
-    app.kubernetes.io/name: kubesentry
+    app.kubernetes.io/name: kubestasis
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: kubesentry-controller-manager
+  name: kubestasis-controller-manager
   namespace: system
   labels:
     control-plane: controller-manager
-    app.kubernetes.io/name: kubesentry
+    app.kubernetes.io/name: kubestasis
 spec:
   replicas: 1
   selector:
@@ -24,7 +24,7 @@ spec:
       labels:
         control-plane: controller-manager
     spec:
-      serviceAccountName: kubesentry-controller-manager
+      serviceAccountName: kubestasis-controller-manager
       terminationGracePeriodSeconds: 10
       securityContext:
         runAsNonRoot: true
@@ -37,7 +37,7 @@ spec:
           image: IMG_PLACEHOLDER
           imagePullPolicy: IfNotPresent
           command:
-            - /kubesentry
+            - /kubestasis
           args:
             - --leader-elect
             - --health-probe-bind-address=:8081

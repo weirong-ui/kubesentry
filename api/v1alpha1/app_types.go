@@ -88,6 +88,53 @@ type ScalingPolicy struct {
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=5
 	Metrics []MetricTarget `json:"metrics,omitempty"`
+
+	// ScaleDownStepPercent 缩容单步最大比例（当前副本数的百分比，至少缩 1 个）。
+	// 扩容不受此限：扩容是应急动作，一步到位；缩容必须渐进，避免震荡。
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	// +kubebuilder:default=20
+	// +optional
+	ScaleDownStepPercent int `json:"scaleDownStepPercent,omitempty"`
+
+	// HysteresisPercent 迟滞带：期望副本与当前副本差值 ≤ max(1, current×p%) 时不动作。
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=50
+	// +kubebuilder:default=10
+	// +optional
+	HysteresisPercent int `json:"hysteresisPercent,omitempty"`
+
+	// ErrorRateScaleUpPercent 错误率超阈值时的单次扩容比例。
+	// 错误率无法换算成副本数，只能按比例吸收；连续超阈值会在多轮 Reconcile 里持续扩。
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	// +kubebuilder:default=20
+	// +optional
+	ErrorRateScaleUpPercent int `json:"errorRateScaleUpPercent,omitempty"`
+}
+
+// ScaleDownStep 返回缩容单步比例；0（旧对象未落默认值）时回退到 20。
+func (p *ScalingPolicy) ScaleDownStep() int {
+	if p == nil || p.ScaleDownStepPercent <= 0 {
+		return 20
+	}
+	return p.ScaleDownStepPercent
+}
+
+// Hysteresis 返回迟滞带比例；0 时回退到 10。
+func (p *ScalingPolicy) Hysteresis() int {
+	if p == nil || p.HysteresisPercent <= 0 {
+		return 10
+	}
+	return p.HysteresisPercent
+}
+
+// ErrorRateStep 返回错误率扩容比例；0 时回退到 20。
+func (p *ScalingPolicy) ErrorRateStep() int {
+	if p == nil || p.ErrorRateScaleUpPercent <= 0 {
+		return 20
+	}
+	return p.ErrorRateScaleUpPercent
 }
 
 // CanaryPolicy 金丝雀发布观察策略.
@@ -110,8 +157,40 @@ type HealthPolicy struct {
 	// +kubebuilder:default=graduated
 	Strategy HealthStrategy `json:"strategy"`
 
+	// ScaleUpPercent L1 自愈扩容比例（当前副本数的百分比，至少 +1），
+	// 受 scaling.maxReplicas 钳制。
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	// +kubebuilder:default=20
+	// +optional
+	ScaleUpPercent int `json:"scaleUpPercent,omitempty"`
+
+	// RestartThreshold 单容器重启次数达到该值即视为异常信号（兜底识别路径，
+	// 主要识别仍靠 waiting.reason / lastState.terminated.reason）。
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	// +kubebuilder:default=5
+	// +optional
+	RestartThreshold int32 `json:"restartThreshold,omitempty"`
+
 	// +optional
 	Canary CanaryPolicy `json:"canary,omitempty"`
+}
+
+// L1ScaleUpPercent 返回 L1 自愈扩容比例；0 时回退到 20。
+func (p *HealthPolicy) L1ScaleUpPercent() int {
+	if p == nil || p.ScaleUpPercent <= 0 {
+		return 20
+	}
+	return p.ScaleUpPercent
+}
+
+// PodRestartThreshold 返回高频重启判定阈值；0 时回退到 5。
+func (p *HealthPolicy) PodRestartThreshold() int32 {
+	if p == nil || p.RestartThreshold <= 0 {
+		return 5
+	}
+	return p.RestartThreshold
 }
 
 // AppSpec defines the desired state of App.
@@ -120,8 +199,13 @@ type AppSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	Image string `json:"image"`
 
+	// Replicas 期望副本数。故意**不**给 CRD 默认值：CRD 默认值在解码阶段
+	// （Mutating Webhook 之前）就会落进对象，若此处 default=1，webhook 的
+	// "replicas 跟随 scaling.minReplicas" 跨字段默认将永远被抢先填 1 而失效
+	// （11.03 真集群实测确认此顺序）。省略时的兜底：webhook 模式由
+	// Defaulter 注入（跟随 minReplicas）；无 webhook 模式由控制器按 1 处理。
 	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:default=1
+	// +optional
 	Replicas *int32 `json:"replicas,omitempty"`
 
 	// +kubebuilder:validation:Minimum=1

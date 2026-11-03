@@ -27,7 +27,7 @@ import (
 	"strings"
 	"time"
 
-	appsv1alpha1 "github.com/weirong-ui/kubesentry/api/v1alpha1"
+	appsv1alpha1 "github.com/weirong-ui/kubestasis/api/v1alpha1"
 )
 
 // 默认 PromQL 模板。占位符：{app} {namespace} {window}。
@@ -133,12 +133,12 @@ func (p *PrometheusSource) DesiredReplicas(ctx context.Context, app *appsv1alpha
 		return int32(math.Ceil(float64(current) * val / targetVal)), true
 
 	case appsv1alpha1.MetricErrorRate:
-		// 错误率无法换算成副本数：按 20%（至少 1 个）扩容吸收，
-		// 连续超阈值会在多个 Reconcile 里持续扩容，直到错误率回落或撞上 maxReplicas
+		// 错误率无法换算成副本数：按 errorRateScaleUpPercent（默认 20%，至少 1 个）
+		// 扩容吸收，连续超阈值会在多个 Reconcile 里持续扩容，直到错误率回落或撞上 maxReplicas
 		if val <= targetVal {
 			return 0, false
 		}
-		step := int32(math.Ceil(float64(current) * 0.2))
+		step := int32(math.Ceil(float64(current) * float64(app.Spec.Scaling.ErrorRateStep()) / 100))
 		if step < 1 {
 			step = 1
 		}

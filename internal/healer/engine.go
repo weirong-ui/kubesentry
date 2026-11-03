@@ -35,9 +35,10 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	appsv1alpha1 "github.com/weirong-ui/kubesentry/api/v1alpha1"
+	appsv1alpha1 "github.com/weirong-ui/kubestasis/api/v1alpha1"
 )
 
 // Level 自愈动作等级.
@@ -135,7 +136,7 @@ func (e *Engine) Inspect(ctx context.Context, c client.Client, app *appsv1alpha1
 	var podList corev1.PodList
 	if err := c.List(ctx, &podList,
 		client.InNamespace(app.Namespace),
-		client.MatchingLabels{labelManagedBy: "kubesentry", labelApp: app.Name},
+		client.MatchingLabels{labelManagedBy: "kubestasis", labelApp: app.Name},
 	); err != nil {
 		// 读失败不算"健康"，但也绝不误动作：返回不健康=false，错误交给日志。
 		// 自愈动作的前提是证据确凿，读不到证据时正确选择是"不动"。
@@ -144,6 +145,12 @@ func (e *Engine) Inspect(ctx context.Context, c client.Client, app *appsv1alpha1
 
 	report := Report{SuggestedLevel: L1ScaleUp}
 	seen := map[string]bool{} // 按 pod+container 去重信号
+
+	// 高频重启阈值：CR 可配（health.restartThreshold），未配时用引擎默认值
+	restartThreshold := e.RestartThreshold
+	if app.Spec.Health != nil && app.Spec.Health.RestartThreshold > 0 {
+		restartThreshold = app.Spec.Health.RestartThreshold
+	}
 
 	for i := range podList.Items {
 		pod := &podList.Items[i]
@@ -180,7 +187,7 @@ func (e *Engine) Inspect(ctx context.Context, c client.Client, app *appsv1alpha1
 				podUnhealthy = true // OOM 保持 L1：先扩容分摊
 			}
 
-			if cs.RestartCount >= e.RestartThreshold {
+			if cs.RestartCount >= restartThreshold {
 				if !seen[key+"#restarts"] {
 					report.Signals = append(report.Signals,
 						fmt.Sprintf("HighRestarts(%s, restarts=%d)", key, cs.RestartCount))
@@ -261,36 +268,59 @@ func (e *Engine) Apply(ctx context.Context, c client.Client, app *appsv1alpha1.A
 	}
 }
 
-// scaleUp L1：在 spec.replicas 基础上扩 20%（至少 +1），受 scaling.maxReplicas 约束。
+// scaleUp L1：在 spec.replicas 基础上扩 health.scaleUpPercent（默认 20%，至少 +1），
+// 受 scaling.maxReplicas 约束。
 // 写回 App.spec 而不是直接改 Deployment——声明式：下一轮 Reconcile 自然收敛，
-// 审计上也能看到"是 KubeSentry 改的 spec"。
+// 审计上也能看到"是 KubeStasis 改的 spec"。
+//
+// 写入用 RetryOnConflict + Merge Patch：自愈发生在故障现场，此刻 status 回写、
+// 用户操作、其他控制器都在动同一个 App，拿旧 resourceVersion 直接 Update 必然
+// 偶发 "the object has been modified"（11.03 实测撞上过）。每次重试都重新
+// Get 最新对象并重算目标值，冲突就不再是噪音而是被正常吸收。
 func (e *Engine) scaleUp(ctx context.Context, c client.Client, app *appsv1alpha1.App, now time.Time) (*Action, error) {
-	current := int32(1)
-	if app.Spec.Replicas != nil {
-		current = *app.Spec.Replicas
-	}
-	step := int32(math.Ceil(float64(current) * 0.2))
-	if step < 1 {
-		step = 1
-	}
-	want := current + step
-	if app.Spec.Scaling != nil && want > app.Spec.Scaling.MaxReplicas {
-		want = app.Spec.Scaling.MaxReplicas
-	}
-	if want <= current {
+	pct := app.Spec.Health.L1ScaleUpPercent()
+
+	var current, want int32
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &appsv1alpha1.App{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(app), latest); err != nil {
+			return err
+		}
+		current = int32(1)
+		if latest.Spec.Replicas != nil {
+			current = *latest.Spec.Replicas
+		}
+		step := int32(math.Ceil(float64(current) * float64(pct) / 100))
+		if step < 1 {
+			step = 1
+		}
+		want = current + step
+		if latest.Spec.Scaling != nil && want > latest.Spec.Scaling.MaxReplicas {
+			want = latest.Spec.Scaling.MaxReplicas
+		}
+		if want <= current {
+			return errAtLimit // 已到上限：不是冲突，停止重试
+		}
+		patch := client.MergeFrom(latest.DeepCopy())
+		latest.Spec.Replicas = &want
+		return c.Patch(ctx, latest, patch)
+	})
+	if err == errAtLimit {
 		return nil, nil // 已到上限，等升级
 	}
-
-	app.Spec.Replicas = &want
-	if err := c.Update(ctx, app); err != nil {
+	if err != nil {
 		return nil, fmt.Errorf("L1 scale up: %w", err)
 	}
+	app.Spec.Replicas = &want // 同步给调用方的 status 回写
 	return &Action{
 		Level: L1ScaleUp, Name: "ScaleUp",
 		Detail:    fmt.Sprintf("replicas %d -> %d (absorb pressure)", current, want),
 		Timestamp: now,
 	}, nil
 }
+
+// errAtLimit 内部哨兵：副本已到上限时用它跳出 RetryOnConflict（它不是可重试错误）。
+var errAtLimit = fmt.Errorf("replicas already at max")
 
 // isolate L2：删除不健康 Pod。Deployment 会立刻补新实例——等价于"摘除坏副本"，
 // 但不需要动 Service selector（打标签摘除的方案在 Pod 被重建后标签会丢，反而不可靠）。
@@ -374,10 +404,25 @@ func (e *Engine) Rollback(ctx context.Context, c client.Client, app *appsv1alpha
 		return 0, nil
 	}
 
-	app.Spec.Image = best.image
-	if err := c.Update(ctx, app); err != nil {
+	// RetryOnConflict + Merge Patch：回滚写 spec.image 时，同一对象的 status
+	// 回写（金丝雀账本/自愈账本）可能刚把它改掉，旧 resourceVersion 的 Update
+	// 会撞 "the object has been modified"——11.03 金丝雀实测撞过一次，
+	// 下一轮回滚才成功。故障现场的写路径必须自己消化冲突，不能靠"下一轮再说"。
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &appsv1alpha1.App{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(app), latest); err != nil {
+			return err
+		}
+		if latest.Spec.Image == best.image {
+			return nil // 已被上一轮（或并发路径）回滚到位，幂等退出
+		}
+		patch := client.MergeFrom(latest.DeepCopy())
+		latest.Spec.Image = best.image
+		return c.Patch(ctx, latest, patch)
+	}); err != nil {
 		return 0, fmt.Errorf("update app image: %w", err)
 	}
+	app.Spec.Image = best.image // 同步给调用方的 status 回写
 	return best.revision, nil
 }
 

@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # crashloop 演示镜像：同一个二进制，启动即退出。
-# 用法：docker build -f deploy/demoapp/Dockerfile.crash -t kubesentry-demoapp:crash .
-ARG DEMOAPP_IMAGE=kubesentry-demoapp:v1
+# 用法：docker build -f deploy/demoapp/Dockerfile.crash -t kubestasis-demoapp:crash .
+ARG DEMOAPP_IMAGE=kubestasis-demoapp:v1
 FROM ${DEMOAPP_IMAGE}
 ENTRYPOINT ["/demoapp", "-crash"]

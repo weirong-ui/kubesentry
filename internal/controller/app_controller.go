@@ -34,15 +34,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	appsv1alpha1 "github.com/weirong-ui/kubesentry/api/v1alpha1"
-	"github.com/weirong-ui/kubesentry/internal/healer"
-	"github.com/weirong-ui/kubesentry/internal/scaler"
+	appsv1alpha1 "github.com/weirong-ui/kubestasis/api/v1alpha1"
+	"github.com/weirong-ui/kubestasis/internal/healer"
+	"github.com/weirong-ui/kubestasis/internal/scaler"
 )
 
 const (
 	appFinalizer = "apps.sentry.io/finalizer"
 
-	// 托管资源统一标签，便于 `kubectl get deploy,svc -l app.kubernetes.io/managed-by=kubesentry`.
+	// 托管资源统一标签，便于 `kubectl get deploy,svc -l app.kubernetes.io/managed-by=kubestasis`.
 	labelManagedBy = "app.kubernetes.io/managed-by"
 	labelApp       = "app"
 
@@ -50,13 +50,13 @@ const (
 	conditionAvailable = "Available"
 
 	// Event reasons: 统一前缀便于运维检索与简历讲解.
-	EventReasonScaleUp    = "KubeSentryScaleUp"
-	EventReasonScaleDown  = "KubeSentryScaleDown"
-	EventReasonHeal       = "KubeSentryHealAction"
-	EventReasonRollback   = "KubeSentryRollback"
-	EventReasonCanaryFail = "KubeSentryCanaryFailed"
-	EventReasonReconcile  = "KubeSentryReconcile"
-	EventReasonError      = "KubeSentryError"
+	EventReasonScaleUp    = "KubeStasisScaleUp"
+	EventReasonScaleDown  = "KubeStasisScaleDown"
+	EventReasonHeal       = "KubeStasisHealAction"
+	EventReasonRollback   = "KubeStasisRollback"
+	EventReasonCanaryFail = "KubeStasisCanaryFailed"
+	EventReasonReconcile  = "KubeStasisReconcile"
+	EventReasonError      = "KubeStasisError"
 )
 
 // AppReconciler reconciles an App object.
@@ -105,7 +105,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// ---------- 1. 删除处理 ----------
 	if !app.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&app, appFinalizer) {
-			// TODO(P2): 导出自愈审计记录后再放行删除
+			// 增强方向（不在 P0–P4 承诺内）：删除前把自愈审计记录导出到外部存储
 			controllerutil.RemoveFinalizer(&app, appFinalizer)
 			if err := r.Update(ctx, &app); err != nil {
 				return ctrl.Result{}, err
@@ -126,12 +126,10 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// ---------- 2. Ensure Deployment & Service ----------
 	deploy, opErr := r.ensureDeployment(ctx, &app)
 	if opErr != nil {
-		r.emitEvent(&app, corev1.EventTypeWarning, EventReasonError, "ensure deployment: "+opErr.Error())
-		return ctrl.Result{}, opErr
+		return r.failOn(ctx, &app, "ensure deployment", opErr)
 	}
 	if _, opErr := r.ensureService(ctx, &app); opErr != nil {
-		r.emitEvent(&app, corev1.EventTypeWarning, EventReasonError, "ensure service: "+opErr.Error())
-		return ctrl.Result{}, opErr
+		return r.failOn(ctx, &app, "ensure service", opErr)
 	}
 
 	// ---------- 3. 金丝雀观察窗口 ----------
@@ -139,8 +137,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		if r.Healer.CheckCanary(ctx, &app) {
 			rev, err := r.Healer.Rollback(ctx, r.Client, &app, deploy)
 			if err != nil {
-				r.emitEvent(&app, corev1.EventTypeWarning, EventReasonError, "canary rollback: "+err.Error())
-				return ctrl.Result{}, fmt.Errorf("canary rollback: %w", err)
+				return r.failOn(ctx, &app, "canary rollback", err)
 			}
 			if rev == 0 {
 				// 错误率超阈值，但没有更早的版本可退：只告警，不空转
@@ -174,15 +171,14 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 		action, err := r.Healer.Apply(ctx, r.Client, &app, deploy, healthReport)
 		if err != nil {
-			r.emitEvent(&app, corev1.EventTypeWarning, EventReasonError, "heal: "+err.Error())
-			return ctrl.Result{}, fmt.Errorf("heal: %w", err)
+			return r.failOn(ctx, &app, "heal", err)
 		}
 		if action != nil {
 			r.emitEvent(&app, corev1.EventTypeWarning, EventReasonHeal, action.Describe())
 			log.Info("healed", "action", action.Describe())
 		} else {
 			// 病了但无动作可执行（已到 L3 观察期 / 无版本可退 / 已到副本上限）：
-			// 必须留事件，否则"系统病了但 KubeSentry 没动静"会看起来像漏报
+			// 必须留事件，否则"系统病了但 KubeStasis 没动静"会看起来像漏报
 			r.emitEvent(&app, corev1.EventTypeWarning, EventReasonHeal,
 				"no action available (observing or at limit): "+healthReport.Summary())
 		}
@@ -196,8 +192,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	decision := r.Scaler.Decide(ctx, &app, time.Now)
 	if decision.Action != scaler.ActionNone {
 		if err := r.Scaler.Apply(ctx, r.Client, &app, decision); err != nil {
-			r.emitEvent(&app, corev1.EventTypeWarning, EventReasonError, "scale: "+err.Error())
-			return ctrl.Result{}, fmt.Errorf("scale: %w", err)
+			return r.failOn(ctx, &app, "scale", err)
 		}
 		reason := EventReasonScaleUp
 		if decision.Action == scaler.ActionScaleDown {
@@ -221,7 +216,7 @@ func (r *AppReconciler) ensureDeployment(ctx context.Context, app *appsv1alpha1.
 
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, want, func() error {
 		// 标签要打在 Deployment 本身上，否则 README 里的
-		// `kubectl get deploy -l app.kubernetes.io/managed-by=kubesentry` 查不到
+		// `kubectl get deploy -l app.kubernetes.io/managed-by=kubestasis` 查不到
 		want.Labels = selectorLabels(app)
 		want.Spec.Replicas = &replicas
 		want.Spec.Selector = &metav1.LabelSelector{MatchLabels: selectorLabels(app)}
@@ -399,8 +394,24 @@ func (r *AppReconciler) emitEvent(app *appsv1alpha1.App, eventType, reason, msg 
 	r.Recorder.Event(app, eventType, reason, msg)
 }
 
+// failOn 统一处理写路径错误。
+//
+// conflict（"the object has been modified"）不是故障：它和 Deployment controller
+// 的 status 写入、我们的 status 回写是天然并发的。对它发 Warning 事件会把
+// `kubectl get events` 刷成红色噪音（11.03 评审指出观感差），正确做法是
+// 静默退避重试——healer/scaler 的写路径内部已用 RetryOnConflict 吸收过一次，
+// 漏到这里的冲突说明重试耗尽，交给控制器退避即可。其他错误照旧发 Warning 事件。
+func (r *AppReconciler) failOn(ctx context.Context, app *appsv1alpha1.App, op string, err error) (ctrl.Result, error) {
+	if apierrors.IsConflict(err) {
+		logf.FromContext(ctx).Info("conflict on write, backing off (not an error)", "op", op)
+		return ctrl.Result{Requeue: true}, nil
+	}
+	r.emitEvent(app, corev1.EventTypeWarning, EventReasonError, op+": "+err.Error())
+	return ctrl.Result{}, fmt.Errorf("%s: %w", op, err)
+}
+
 func selectorLabels(app *appsv1alpha1.App) map[string]string {
-	return map[string]string{labelManagedBy: "kubesentry", labelApp: app.Name}
+	return map[string]string{labelManagedBy: "kubestasis", labelApp: app.Name}
 }
 
 func desiredReplicas(app *appsv1alpha1.App) int32 {

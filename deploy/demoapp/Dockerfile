@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-# demoapp：KubeSentry 演示负载（暴露 /metrics 的最小 HTTP 服务）。
+# demoapp：KubeStasis 演示负载（暴露 /metrics 的最小 HTTP 服务）。
 # 与主镜像同一套约定：多阶段 + distroless + 非 root。
 #
 # 运行时基础镜像可覆盖（ARG 必须在任何 FROM 之前声明才对 FROM 生效）：

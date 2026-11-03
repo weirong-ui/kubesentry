@@ -76,14 +76,57 @@ jobs:
         uses: helm/kind-action@v1
         with:
           cluster_name: kind
-      - name: Build image
-        run: docker build -t kubesentry:e2e .
-      - name: Load image into kind
-        run: kind load docker-image kubesentry:e2e --name kind
-      - name: Deploy operator
-        run: make deploy IMG=kubesentry:e2e
-      - name: Wait for controller manager
-        run: kubectl -n kubesentry-system rollout status deploy/kubesentry-controller-manager --timeout=180s
+      - name: Build images
+        run: |
+          docker build -t kubestasis:e2e .
+          # P2 自愈回归要两个镜像版本：v1 正常 / v2-crash 启动即退出，
+          # 回滚的语义就是"把 spec.image 退回上一个不同镜像"
+          docker build -t kubestasis-demoapp:v1 -f deploy/demoapp/Dockerfile .
+          docker build -t kubestasis-demoapp:v2-crash -f deploy/demoapp/Dockerfile.crash \
+            --build-arg DEMOAPP_IMAGE=kubestasis-demoapp:v1 .
+      - name: Load images into kind
+        run: kind load docker-image kubestasis:e2e kubestasis-demoapp:v1 kubestasis-demoapp:v2-crash --name kind
+      - name: Deploy operator with admission webhook
+        # deploy-webhook = overlay 部署 + 自签证书 + caBundle 注入 + 滚动重启，
+        # 不依赖 cert-manager；P3 的 Webhook 与 P0 链路在同一集群里验证
+        run: make deploy-webhook IMG=kubestasis:e2e
+      - name: Webhook rejects :latest image
+        run: |
+          set -e
+          cat > /tmp/bad-app.yaml <<'EOF'
+          apiVersion: apps.sentry.io/v1alpha1
+          kind: App
+          metadata:
+            name: bad-latest
+          spec:
+            image: nginx:latest
+            port: 8080
+          EOF
+          if kubectl apply -f /tmp/bad-app.yaml 2>/tmp/webhook-err.txt; then
+            echo "FAIL: webhook accepted a :latest image"
+            exit 1
+          fi
+          grep -i "latest" /tmp/webhook-err.txt || { cat /tmp/webhook-err.txt; exit 1; }
+          echo "ok: rejected with: $(tail -1 /tmp/webhook-err.txt)"
+      - name: Webhook defaults replicas from minReplicas
+        run: |
+          set -e
+          cat > /tmp/defaulted-app.yaml <<'EOF'
+          apiVersion: apps.sentry.io/v1alpha1
+          kind: App
+          metadata:
+            name: defaulted
+          spec:
+            image: kubestasis-demoapp:v1
+            port: 8080
+            scaling:
+              minReplicas: 3
+              maxReplicas: 5
+          EOF
+          kubectl apply -f /tmp/defaulted-app.yaml
+          got=$(kubectl get app defaulted -o jsonpath='{.spec.replicas}')
+          [ "$got" = "3" ] || { echo "FAIL: replicas=$got, want 3 (from minReplicas)"; exit 1; }
+          echo "ok: replicas defaulted to minReplicas=3"
       - name: Apply sample App
         run: kubectl apply -f config/samples/
       - name: Assert App becomes Available
@@ -91,18 +134,59 @@ jobs:
           set -e
           kubectl wait --for=condition=Available app/sample --timeout=240s
           kubectl get app sample -o wide
-          kubectl get deploy,svc -l app.kubernetes.io/managed-by=kubesentry
+          kubectl get deploy,svc -l app.kubernetes.io/managed-by=kubestasis
           echo "--- status ---"
           kubectl get app sample -o jsonpath='{.status}'
           echo
       - name: Events must be recorded
-        run: kubectl get events --field-selector reason=KubeSentryReconcile
+        run: kubectl get events --field-selector reason=KubeStasisReconcile
+
+      # ---------- P2 自愈回归（11.03 评审意见①：自愈不能只靠人工实测） ----------
+      - name: P2 self-healing regression
+        run: |
+          set -e
+          cat > /tmp/heal-demo.yaml <<'EOF'
+          apiVersion: apps.sentry.io/v1alpha1
+          kind: App
+          metadata:
+            name: heal-demo
+          spec:
+            image: kubestasis-demoapp:v1
+            replicas: 1
+            port: 8080
+            health:
+              strategy: graduated
+          EOF
+          kubectl apply -f /tmp/heal-demo.yaml
+          kubectl wait --for=condition=Available app/heal-demo --timeout=240s
+
+          echo "==> 发布 crash 版本，期望：L2 摘除 → 复发 → 冷却期内升级 L3 → 回滚镜像"
+          kubectl patch app heal-demo --type=merge -p '{"spec":{"image":"kubestasis-demoapp:v2-crash"}}'
+
+          rolled_back=""
+          # 探测周期 1-2min + 升级路径（冷却期默认 3min 内复发才升级）→ 预算 10 分钟
+          for i in $(seq 1 60); do
+            img=$(kubectl get app heal-demo -o jsonpath='{.spec.image}')
+            if [ "$img" = "kubestasis-demoapp:v1" ]; then
+              rolled_back="yes"; echo "==> L3 回滚生效（第 ${i}0 秒左右）"; break
+            fi
+            sleep 10
+          done
+          kubectl get app heal-demo -o jsonpath='{.status}' && echo
+          kubectl get events --field-selector reason=KubeStasisHealAction
+          if [ -z "$rolled_back" ]; then
+            echo "FAIL: 10 分钟内没有等到自动回滚"
+            exit 1
+          fi
+          kubectl wait --for=condition=Available app/heal-demo --timeout=240s
+          echo "==> 自愈完成：回滚后恢复 Available"
       - name: Dump diagnostics on failure
         if: failure()
         run: |
-          kubectl -n kubesentry-system logs deploy/kubesentry-controller-manager --tail=100
-          kubectl describe app sample
-          kubectl get events --sort-by=.lastTimestamp | tail -30
+          kubectl -n kubestasis-system logs deploy/kubestasis-controller-manager --tail=150
+          kubectl describe app sample || true
+          kubectl describe app heal-demo || true
+          kubectl get events --sort-by=.lastTimestamp | tail -40
 
   image:
     name: image

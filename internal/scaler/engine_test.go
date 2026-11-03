@@ -25,7 +25,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	appsv1alpha1 "github.com/weirong-ui/kubesentry/api/v1alpha1"
+	appsv1alpha1 "github.com/weirong-ui/kubestasis/api/v1alpha1"
 )
 
 // fakeSource 固定返回预设值，让 Decide 的每一道闸都可以独立测试。

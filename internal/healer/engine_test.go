@@ -29,7 +29,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	appsv1alpha1 "github.com/weirong-ui/kubesentry/api/v1alpha1"
+	appsv1alpha1 "github.com/weirong-ui/kubestasis/api/v1alpha1"
 )
 
 var fixedNow = time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
@@ -72,7 +72,7 @@ func newPod(name, appName string, mutate func(*corev1.ContainerStatus)) *corev1.
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: "default",
-			Labels:    map[string]string{labelManagedBy: "kubesentry", labelApp: appName},
+			Labels:    map[string]string{labelManagedBy: "kubestasis", labelApp: appName},
 		},
 		Status: corev1.PodStatus{
 			Phase:             corev1.PodRunning,

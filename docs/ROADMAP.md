@@ -1,4 +1,4 @@
-# KubeSentry Roadmap
+# KubeStasis Roadmap
 
 > 与大三下学期 + 秋招时间线对齐，每个里程碑都是一次简历更新点 + 一篇掘金文章素材。
 
@@ -14,7 +14,7 @@
 ## P1 — 智能伸缩（核心已完成 2026-11-03）
 - [x] 对接 Prometheus HTTP API 查询 QPS / P99 / 错误率（`internal/scaler/prometheus.go`）
 - [x] 多信号伸缩决策 + 冷却窗口 + 迟滞带 + 缩容渐进（真集群：500 QPS 扩 1→5，停流缩 5→1）
-- [ ] 决策过程可观测：Prometheus metrics（`kubesentry_scaling_decisions_total`）+ Grafana 面板
+- [ ] 决策过程可观测：Prometheus metrics（`kubestasis_scaling_decisions_total`）+ Grafana 面板
 - 📦 产出：演示实录 `docs/demo/01-scaling.md`、文章《为什么 HPA 会震荡：手写伸缩决策引擎》
 
 ## P2 — 故障自愈（核心已完成 2026-11-03）

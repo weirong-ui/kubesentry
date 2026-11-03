@@ -1,0 +1,44 @@
+# 在 default manager 之上打开 Webhook：
+#   - --enable-webhook=true：注册 mutating/validating handler（:9443）
+#   - 挂载 webhook-server-cert Secret 到 controller-runtime 默认证书目录
+#
+# 注意（11.03 实测踩坑）：不要图快把 --heal-cooldown 调小到 90s 以下——
+# CrashLoop 的"删除坏 Pod → 新 Pod 再次进入 CrashLoopBackOff"探测周期约 1-2 分钟，
+# 自愈冷却期若短于该周期，"冷却期内复发才升级"永远触发不了，自愈停在 L1/L2 空转
+# 扩出一堆 crash 副本。默认 3 分钟刚好覆盖探测周期，e2e 里耐心等就行。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubestasis-controller-manager
+  # 必须显式给出 namespace：资源来自嵌套的 ../default，进到本 overlay 时
+  # 已带上 kubestasis-system，裸 patch（无 namespace）匹配不到它
+  namespace: kubestasis-system
+spec:
+  template:
+    spec:
+      containers:
+        - name: manager
+          args:
+            - --leader-elect
+            - --health-probe-bind-address=:8081
+            - --metrics-bind-address=:8080
+            - --enable-webhook=true
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+            - name: webhook-server
+              containerPort: 9443
+              protocol: TCP
+          volumeMounts:
+            - name: cert
+              mountPath: /tmp/k8s-webhook-server/serving-certs
+              readOnly: true
+      volumes:
+        - name: cert
+          secret:
+            secretName: webhook-server-cert
+            defaultMode: 420

@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# KubeSentry 多阶段构建：builder 编译 → distroless 运行
+# KubeStasis 多阶段构建：builder 编译 → distroless 运行
 # 安全卖点：无 shell、无包管理器、非 root —— CKS 面试可以直接聊
 
 # 全局 ARG 必须声明在第一个 FROM 之前，才能用于 FROM 指令。
@@ -26,12 +26,12 @@ COPY internal/ internal/
 
 # CGO_ENABLED=0：产物是纯静态二进制，才能塞进 distroless/static
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -trimpath -ldflags="-s -w" -o kubesentry ./cmd
+    go build -trimpath -ldflags="-s -w" -o kubestasis ./cmd
 
 # distroless/static-nonroot：无 shell、无包管理器、默认非 root，攻击面最小
 FROM ${RUNTIME_IMAGE}
 WORKDIR /
-COPY --from=builder /workspace/kubesentry .
+COPY --from=builder /workspace/kubestasis .
 USER 65532:65532
 
-ENTRYPOINT ["/kubesentry"]
+ENTRYPOINT ["/kubestasis"]

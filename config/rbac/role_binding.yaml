@@ -8,5 +8,5 @@ roleRef:
   name: manager-role
 subjects:
 - kind: ServiceAccount
-  name: kubesentry-controller-manager
+  name: kubestasis-controller-manager
   namespace: system
