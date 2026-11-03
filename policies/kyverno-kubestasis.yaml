@@ -1,0 +1,62 @@
+# Kyverno 策略：把"镜像可信"从口头约定变成集群级强制（CKS 证据链）。
+#
+# 与 KubeStasis 自带的 Admission Webhook 分工：
+#   - Webhook 管 App CR 的业务合法性（禁 latest、min<=max、target 可解析）
+#   - Kyverno 管集群里所有 Pod 的镜像供应链安全（来源白名单 + 签名校验）
+#
+# 安装：helm install kyverno kyverno/kyverno -n kyverno --create-namespace
+#       kubectl apply -f policies/
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: kubestasis-image-trust
+  annotations:
+    policies.kyverno.io/title: KubeStasis image trust
+    policies.kyverno.io/description: >-
+      KubeStasis 管理的负载：镜像必须来自 ghcr.io/weirong-ui/kubestasis 且带
+      CI keyless 签名；任何命名空间禁跑 :latest 或无 tag 镜像。
+spec:
+  validationFailureAction: Enforce
+  background: false
+  rules:
+    # 规则 1：任何 Pod 都不许用 :latest 镜像（和 App webhook 同一条军规，
+    # 覆盖绕过 App CR 直接建 Deployment 的路径）
+    - name: disallow-latest-tag
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      validate:
+        message: "禁止 :latest 镜像（回滚与审计要求版本可枚举）"
+        pattern:
+          spec:
+            containers:
+              - image: "!*:latest"
+    # 规则 2：镜像必须显式带 tag（"nginx" 等价于 "nginx:latest"，一样是 mutable）
+    - name: require-image-tag
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      validate:
+        message: "镜像必须显式带 tag（无 tag 等价于 :latest）"
+        pattern:
+          spec:
+            containers:
+              - image: "*:*"
+    # 规则 3：KubeStasis manager 镜像必须有本仓库 CI 的 keyless 签名
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [kubestasis-system]
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/weirong-ui/kubestasis*"
+          attestors:
+            - entries:
+                - keyless:
+                    subject: "https://github.com/weirong-ui/kubestasis/.github/workflows/ci.yml@refs/heads/main"
+                    issuer: "https://token.actions.githubusercontent.com"
+                    rekor:
+                      url: https://rekor.sigstore.dev

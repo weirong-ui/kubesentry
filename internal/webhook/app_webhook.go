@@ -192,15 +192,15 @@ func validateImage(image string) error {
 // 规则与 scaler.parseTarget 保持一致（那里是运行期解析，这里是准入期拦截）。
 func validateMetricTarget(m appsv1alpha1.MetricTarget) error {
 	switch m.Type {
-	case appsv1alpha1.MetricQPS:
+	case appsv1alpha1.MetricQPS, appsv1alpha1.MetricQueueDepth:
 		if v, err := strconv.ParseFloat(m.Target, 64); err != nil || v <= 0 {
-			return fmt.Errorf("target %q 必须是正数（每 Pod 每秒请求数）", m.Target)
+			return fmt.Errorf("target %q 必须是正数（QPS=每 Pod 每秒请求数 / QueueDepth=每 Pod 排队请求数）", m.Target)
 		}
-	case appsv1alpha1.MetricErrorRate:
+	case appsv1alpha1.MetricErrorRate, appsv1alpha1.MetricKVCacheUsage:
 		if v, err := strconv.ParseFloat(m.Target, 64); err != nil || v <= 0 || v >= 1 {
 			return fmt.Errorf("target %q 必须是 (0,1) 内的小数", m.Target)
 		}
-	case appsv1alpha1.MetricP99Latency:
+	case appsv1alpha1.MetricP99Latency, appsv1alpha1.MetricTTFT:
 		// 裸数字按秒，或 time.ParseDuration 可解析（"200ms"/"1s"）
 		if v, err := strconv.ParseFloat(m.Target, 64); err == nil && v > 0 {
 			return nil

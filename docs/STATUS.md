@@ -45,16 +45,18 @@
 | Finalizer 删除时序 | ✅ 已实现 | 添加/移除正确；删前导出审计是未排期的增强项，不在 P0–P4 承诺内 |
 | 迟滞带 + 缩容渐进算法 | ✅ 已实现 | 纯函数逻辑完整（含"缩回 minReplicas 不受迟滞约束""`ceil(0.2×current)` 缩不动"两个坑） |
 | 冷却窗口 | ✅ 已实现 | `LastScalingAt` 在 decision≠None 时写入；逻辑已被单测覆盖（冷却拦缩容、放行扩容、过期放行） |
-| Prometheus 多信号伸缩 | ✅ 已实现 | `internal/scaler/prometheus.go`：QPS（`rate` 换算副本）、P99（`histogram_quantile` 按比例扩）、错误率（超阈值扩 20%）；`--prometheus-url`/`--prometheus-window` 注入，不配则休眠。**真实指标源端到端验证**（2026-11-03：集群内真实 Prometheus v2.54.1 按 Pod 抓取 + demoapp 打流 500 QPS → 扩 1→5，停流后渐进缩 5→1，全程 Events 留痕，实录见 [docs/demo/01-scaling.md](demo/01-scaling.md)） |
+| Prometheus 多信号伸缩 | ✅ 已实现 | `internal/scaler/prometheus.go`：QPS（`rate` 换算副本）、P99（`histogram_quantile` 按比例扩）、错误率（超阈值按比例扩，比例可配）；`--prometheus-url`/`--prometheus-window` 注入，不配则休眠。**真实指标源端到端验证**（2026-11-03：集群内真实 Prometheus v2.54.1 按 Pod 抓取 + demoapp 打流 500 QPS → 扩 1→5，停流后渐进缩 5→1，全程 Events 留痕，实录见 [docs/demo/01-scaling.md](demo/01-scaling.md)） |
+| AI 推理弹性信号 | ✅ 已实现 | 同一 `MetricsSource` 接口下的三个新信号：`QueueDepth`（队列深度换算副本，同 QPS 型）、`TTFT`（首 token 延迟超阈值按比例扩）、`KVCacheUsage`（KV cache 占用率超阈值按比例扩）；默认 vLLM 指标名，`WithQuery` 可换 SGLang/TGI。通用自愈平移到推理场景不重写项目 |
 | 故障识别（CrashLoop / OOM / 高频重启） | ✅ 已实现 | `Inspect` 按 Pod 标签列出实例，读 `containerStatuses[].state.waiting.reason` / `lastState.terminated.reason` / restartCount 兜底；有意忽略"别的 App 的 Pod"与"正在删除的 Pod"。**真集群验证**：crash 镜像发布后 ~2.5min 识别并动作 |
 | 分级自愈 L1→L2→L3 | ✅ 已实现 | L1 扩容 20%（受 maxReplicas 钳制）/ L2 删除不健康 Pod / L3 从 ReplicaSet 修订历史回滚镜像（改 App.spec，声明式收敛）。升级路径由 `status.lastHealLevel/lastHealAt` 驱动：冷却期内复发才升级；已到 L3 还在坏则进入观察。**真集群验证**：L2 摘除 → 复发 → 自动升 L3 → 回滚 → 2/2 恢复 |
 | 金丝雀观察 + 自动回滚 | ✅ 已实现 | 镜像变更写入 `status.lastImageChangeAt` 开窗；窗口内 `ErrSource.ErrorRate` 超阈值即回滚并关窗（防回滚死循环）。**真集群验证**：50% 错误率版本发布后 ~20s 自动回滚，`status.rollbackRevision=1` |
 | 冲突自愈的写路径 | ✅ 已实现 | 11.03 评审指出 L3 回滚撞过 `the object has been modified`：healer/scaler 全部 spec 写路径改 `RetryOnConflict + Merge Patch`（每次重试重新 Get 最新对象重算）；控制器层 conflict 静默退避不再发 Warning 事件。拦截器注入冲突的单测覆盖 |
 | 策略参数 CRD 可配 | ✅ 已实现 | 11.03 评审指出魔法数字硬编码：L1 扩容比例（`health.scaleUpPercent`）、高频重启阈值（`health.restartThreshold`）、缩容步长（`scaling.scaleDownStepPercent`）、迟滞带（`scaling.hysteresisPercent`）、错误率扩容比例（`scaling.errorRateScaleUpPercent`）全部入 CRD 带默认值；旧对象零值回退原默认，行为兼容 |
 | Admission Webhook | ✅ 已实现 | `internal/webhook/`：Mutating（replicas 跟随 minReplicas 的跨字段默认）+ Validating（禁 latest/无 tag 镜像、min≤max、replicas 落区间、指标 target 按类型可解析、同类型不重复、金丝雀阈值与窗口下限；聚合报错一次列全）。`make deploy-webhook`：overlay + `hack/webhook-certs.sh` 自签证书 + caBundle 注入，不依赖 cert-manager。**CI e2e 负向用例**：`:latest` 被拒、默认值注入生效 |
-| mini-Informer | 🗓 规划中 | `pkg/miniinformer/` 不存在，P4（Dockerfile 已预留注释位） |
+| mini-Informer | ✅ 已实现 | `pkg/miniinformer/`：手写 ListWatch → DeltaFIFO（按键压缩去重）→ Store → Handler + 控制器侧 WorkQueue（幂等+不漏），泛型实现约 400 行，11 个用例含断线重列；与 client-go 的取舍差异逐条写在包注释与 [README](../pkg/miniinformer/README.md) |
+| 镜像签名与准入策略 | ✅ 已实现 | CI image job 用 cosign keyless 签 GHCR digest（GitHub OIDC → Fulcio → Rekor）并签完自验；`policies/kyverno-kubestasis.yaml`：禁 latest/无 tag + kubestasis-system 强制验签。CKS 考点变成可展示证据 |
 | Helm Chart | 🗓 规划中 | `charts/` 不存在，第 3 周在 kustomize 之后再做 |
-| 单元测试 | ✅ 79 用例 | scaler 27 + controller 8 + healer 30 + webhook 14（新增：冲突重试吸收、可配参数生效、webhook 全规则正反例）。envtest 待第 3 周 |
+| 单元测试 | ✅ 100 用例 | scaler 37 + controller 8 + healer 30 + webhook 14 + miniinformer 11。envtest 待第 3 周 |
 | 压测与 HPA 对比表 | 🗓 规划中 | 第 3 周——这是证明"迟滞算法优于原生 HPA"的唯一硬证据，优先级最高 |
 
 ## 四、11.02 夜这一轮改了什么（P0 收尾）
@@ -108,12 +110,12 @@
 
 ## 七、下一步（11.05 起）
 
-1. ~~P1 指标源~~：**已完成**（2026-11-03），真实 Prometheus + 打流验证，实录 `docs/demo/01-scaling.md`
-2. ~~P2 自愈~~：**已完成**（2026-11-03），分级自愈 + 金丝雀回滚，实录 `docs/demo/02-self-healing.md`
-3. ~~单测~~：**已完成**（2026-11-03），57 个用例
-4. **P3 Admission Webhook**：校验（禁 latest、min≤max）+ 默认值注入（资源限制、安全上下文）——呼应 CKS 考点
-5. **P4 mini-Informer**：ListWatch + DeltaFIFO + WorkQueue 手写实现（面试高频）
-6. **第 3 周**：envtest、Helm Chart、压测对比表、把 P2 链路搬进 CI e2e
+1. ~~P1 指标源~~ / ~~P2 自愈~~ / ~~P3 Webhook~~ / ~~P4 mini-Informer~~：**全部完成**（2026-11-03）
+2. **第 3 周硬骨头**（按优先级）：
+   - **压测对比表**：KubeStasis 迟滞算法 vs 原生 HPA，同一负载曲线下的副本震荡次数/响应时间——"优于 HPA"目前只有定性论证，缺量化证据
+   - envtest 集成测试（控制循环级回归）
+   - Helm Chart（kustomize 之外的第二种安装形态）
+3. 可选增强（不承诺）：Kyverno 策略进 CI kind 集群实测、决策指标导出（`kubestasis_scaling_decisions_total`）
 
 ## 八、每日勾选
 
@@ -123,3 +125,11 @@
 | 2026-11-02 夜 | P0 收尾（脚手架、Service、Status/Conditions、Events、CI） | 链路跑通：CR → Deploy+Service → Available |
 | 2026-11-03 | P1 指标源 + 31 个单测 + 真集群端到端验证 + 仓库描述/topics + GitHub 主页 README | 伸缩引擎从"休眠"到"集群验证过"；0 测试 → 31 用例；修掉 omitempty 结构体序列化 bug |
 | 2026-11-03 下午 | P1 真实指标源演示（真 Prometheus + 打流）+ P2 自愈引擎落地 + 26 个 healer 用例 | P1/P2 从"未验证"到"真集群跑通"；31 → 57 用例；踩到并修复"静态 Service 抓取导致 counter 非单调"的指标坑 |
+| 2026-11-03 晚 | P3 Webhook + P4 mini-Informer + 评审三连修复（冲突写路径/魔法数字可配/CI 覆盖 P2）+ AI 推理信号 + cosign/Kyverno + 更名 KubeStasis | 57 → 100 用例；P0–P4 全闭环；真集群复现并修掉两个新坑（见下） |
+
+### 11.03 晚新踩的坑（已修，写进记忆）
+
+1. **CRD schema 默认值先于 Mutating Webhook 落地**：`spec.replicas` 挂 `default=1` 时，webhook 的"跟随 minReplicas"永远被抢先填 1——跨字段默认的字段不能挂 schema 默认值（真集群实测确认，不是读文档猜的）
+2. **自愈冷却期不能短于故障探测周期**：CrashLoop 的"删 Pod → 再进 CrashLoopBackOff"周期约 1-2 分钟；冷却 90s 时"冷却期内复发才升级"永不触发，L1 把 crash 副本从 1 扩到 3 空转。默认 3 分钟刚好覆盖
+3. **caBundle 在 `clientConfig` 下**：patch 路径 `/webhooks/N/clientConfig/caBundle`，不是 `/webhooks/N/caBundle`
+4. **rollout 完成 ≠ webhook 可服务**：endpoint 就绪有秒级延迟，CI 负向用例要对 InternalError 重试、只对 Forbidden 断言

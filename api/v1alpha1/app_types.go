@@ -25,13 +25,18 @@ import (
 )
 
 // MetricType 多信号伸缩的指标类型.
-// +kubebuilder:validation:Enum=QPS;P99Latency;ErrorRate
+// 通用信号：QPS / P99Latency / ErrorRate。
+// 推理场景信号（vLLM 风格的 AI 推理服务）：QueueDepth / TTFT / KVCacheUsage。
+// +kubebuilder:validation:Enum=QPS;P99Latency;ErrorRate;QueueDepth;TTFT;KVCacheUsage
 type MetricType string
 
 const (
-	MetricQPS        MetricType = "QPS"
-	MetricP99Latency MetricType = "P99Latency"
-	MetricErrorRate  MetricType = "ErrorRate"
+	MetricQPS          MetricType = "QPS"          // 每 Pod 每秒请求数
+	MetricP99Latency   MetricType = "P99Latency"   // P99 延迟
+	MetricErrorRate    MetricType = "ErrorRate"    // 5xx 错误率
+	MetricQueueDepth   MetricType = "QueueDepth"   // 推理队列深度（等待中的请求数/Pod）
+	MetricTTFT         MetricType = "TTFT"         // 首 token 延迟（Time To First Token）
+	MetricKVCacheUsage MetricType = "KVCacheUsage" // KV cache 占用率（0~1）
 )
 
 // HealthStrategy 自愈策略.
@@ -60,9 +65,12 @@ type MetricTarget struct {
 	Type MetricType `json:"type"`
 
 	// Target 目标值，格式随 Type 而定：
-	//   QPS:        "1000"   (每 Pod 每秒请求数)
-	//   P99Latency: "200ms"
-	//   ErrorRate:  "0.01"   (1%)
+	//   QPS:          "1000"   (每 Pod 每秒请求数)
+	//   P99Latency:   "200ms"
+	//   ErrorRate:    "0.01"   (1%)
+	//   QueueDepth:   "5"      (每 Pod 排队请求数)
+	//   TTFT:         "1s"     (首 token 延迟，同 P99Latency 格式)
+	//   KVCacheUsage: "0.85"   (KV cache 占用率上限)
 	// +kubebuilder:validation:MinLength=1
 	Target string `json:"target"`
 }

@@ -14,6 +14,7 @@
 ## P1 — 智能伸缩（核心已完成 2026-11-03）
 - [x] 对接 Prometheus HTTP API 查询 QPS / P99 / 错误率（`internal/scaler/prometheus.go`）
 - [x] 多信号伸缩决策 + 冷却窗口 + 迟滞带 + 缩容渐进（真集群：500 QPS 扩 1→5，停流缩 5→1）
+- [x] AI 推理信号扩展：QueueDepth / TTFT / KVCacheUsage（默认 vLLM 指标名，WithQuery 可覆盖，2026-11-03 晚）
 - [ ] 决策过程可观测：Prometheus metrics（`kubestasis_scaling_decisions_total`）+ Grafana 面板
 - 📦 产出：演示实录 `docs/demo/01-scaling.md`、文章《为什么 HPA 会震荡：手写伸缩决策引擎》
 
@@ -21,18 +22,20 @@
 - [x] 故障识别：CrashLoopBackOff / OOMKilled / 高频重启兜底（按 Pod containerStatuses）
 - [x] 分级自愈状态机：L1 扩容 → L2 摘除坏 Pod → L3 按 ReplicaSet 修订历史回滚镜像
 - [x] 金丝雀观察窗口 + 版本自动回滚（错误率超阈值 ~20s 内自动回滚）
-- [ ] kind 集群混沌验证脚本（CI 化，第 3 周）
+- [x] P2 自愈链路 CI 化（kind e2e：crash 镜像 → L2→L3 自动回滚断言，2026-11-03）
+- [ ] kind 集群混沌验证脚本（随机杀 Pod，第 3 周）
 - 📦 产出：演示实录 `docs/demo/02-self-healing.md`、文章《给 K8s 加一个"自动值班员"：分级自愈引擎设计》
 
-## P3 — Admission Webhook（2 周）
-- [ ] Validating Webhook：CR 校验规则
-- [ ] Defaulting Webhook：安全上下文/资源限制默认值注入（CKS 落地）
-- [ ] cert-manager 集成与本地开发证书方案
-- 📦 产出：文章《K8s 准入控制实战：从 Kube-apiserver 到你的 Webhook》
+## P3 — Admission Webhook（已完成 2026-11-03）
+- [x] Validating Webhook：禁 latest/无 tag、min≤max、replicas 落区间、指标 target 按类型解析、金丝雀阈值与窗口下限，聚合报错
+- [x] Mutating Webhook：跨字段默认值（replicas 跟随 minReplicas）——踩到并修复"CRD schema 默认值先于 Mutating Webhook 落地"的顺序坑
+- [x] 证书方案：hack/webhook-certs.sh 自签 + caBundle 注入，不依赖 cert-manager
+- [x] 超额完成：CI image job cosign keyless 签名 GHCR digest + 签完自验；policies/ Kyverno 策略（禁 latest + 验签）
+- 📦 产出：文章《K8s 准入控制实战：从 Kube-apiserver 到你的 Webhook》（素材含上面两个真实坑）
 
-## P4 — 手写 mini-Informer（3 周，面试杀手锏）
-- [ ] 不依赖 informer 库，实现 ListWatch → DeltaFIFO → EventHandler → WorkQueue
-- [ ] 对比 client-go 原生实现，写原理长文
+## P4 — 手写 mini-Informer（已完成 2026-11-03）
+- [x] 不依赖 informer 库，实现 ListWatch → DeltaFIFO → Store → EventHandler → WorkQueue（泛型，约 400 行）
+- [x] 与 client-go 的取舍差异逐条记录（pkg/miniinformer/README.md），11 个用例含断线重列
 - 📦 产出：`pkg/miniinformer` + 掘金深度文《图解 client-go Informer：手写一个才敢说懂》（这篇有爆款潜质）
 
 ## 远景（不承诺，不在 11 月–秋招计划内）
@@ -48,7 +51,7 @@
 
 | 时间 | 里程碑 | 简历动作 |
 |---|---|---|
-| 2026.11–12 | P0 + P1 | 简历首次写入项目（弹性伸缩 Operator） |
-| 2027.01–02 | P2 + P3 | 补充"自愈引擎""准入控制"关键词 |
-| 2027.03 | P4 + 系列文章完结 | 补充"手写 Informer""掘金系列 x N 篇" |
-| 2027.04–05 | 演示视频 + 面试题库整理 | 简历定稿，秋招冲刺 |
+| 2026.11.02–03 | P0–P4 全部闭环（进度大幅提前） | 简历一次到位：弹性伸缩 + 自愈 + 准入控制 + 手写 Informer |
+| 2026.11–12 | 压测对比表 + envtest + Helm Chart + 系列文章补齐 | 把"优于 HPA"从定性论证变成量化证据 |
+| 2027.01–03 | 掘金系列完结 + 演示视频 | 补充"掘金系列 x N 篇" |
+| 2027.04–05 | 面试题库整理 | 简历定稿，秋招冲刺 |

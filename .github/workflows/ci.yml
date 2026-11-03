@@ -102,10 +102,18 @@ jobs:
             image: nginx:latest
             port: 8080
           EOF
-          if kubectl apply -f /tmp/bad-app.yaml 2>/tmp/webhook-err.txt; then
-            echo "FAIL: webhook accepted a :latest image"
-            exit 1
-          fi
+          # rollout 完成 ≠ webhook 已可服务（endpoint 就绪与证书挂载有秒级延迟），
+          # 对"还没就绪"的 InternalError 重试；只有拿到明确的 Forbidden 才算数
+          ok=""
+          for i in $(seq 1 12); do
+            if kubectl apply -f /tmp/bad-app.yaml 2>/tmp/webhook-err.txt; then
+              echo "FAIL: webhook accepted a :latest image"
+              exit 1
+            fi
+            if grep -q "Forbidden" /tmp/webhook-err.txt; then ok=yes; break; fi
+            sleep 5
+          done
+          [ -n "$ok" ] || { echo "webhook never became ready:"; cat /tmp/webhook-err.txt; exit 1; }
           grep -i "latest" /tmp/webhook-err.txt || { cat /tmp/webhook-err.txt; exit 1; }
           echo "ok: rejected with: $(tail -1 /tmp/webhook-err.txt)"
       - name: Webhook defaults replicas from minReplicas
@@ -196,6 +204,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write # cosign keyless 签名要拿 OIDC token（Fulcio 证书的"身份来源"）
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -206,6 +215,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -214,3 +224,16 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}:${{ github.sha }}
             ghcr.io/${{ github.repository }}:latest
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+      - name: Sign image (keyless)
+        # 签 digest 不签 tag：tag 可以被重新指向，digest 不可变。
+        # keyless 链：GitHub OIDC token → Fulcio 短期证书 → Rekor 透明日志，
+        # 验证方用 issuer+subject 断言"这镜像是这个仓库的 CI 签的"，无需管理私钥。
+        run: cosign sign --yes ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
+      - name: Verify signature round-trip
+        # 签完立刻自验一遍：CI 里的证据链闭环，也防止签名步骤静默坏掉
+        run: |
+          cosign verify ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }} \
+            --certificate-identity-regexp "https://github.com/${{ github.repository }}/.github/workflows/ci.yml" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" | head -5

@@ -164,9 +164,12 @@ spec:
                         target:
                           description: |-
                             Target 目标值，格式随 Type 而定：
-                              QPS:        "1000"   (每 Pod 每秒请求数)
-                              P99Latency: "200ms"
-                              ErrorRate:  "0.01"   (1%)
+                              QPS:          "1000"   (每 Pod 每秒请求数)
+                              P99Latency:   "200ms"
+                              ErrorRate:    "0.01"   (1%)
+                              QueueDepth:   "5"      (每 Pod 排队请求数)
+                              TTFT:         "1s"     (首 token 延迟，同 P99Latency 格式)
+                              KVCacheUsage: "0.85"   (KV cache 占用率上限)
                           minLength: 1
                           type: string
                         type:
@@ -175,6 +178,9 @@ spec:
                           - QPS
                           - P99Latency
                           - ErrorRate
+                          - QueueDepth
+                          - TTFT
+                          - KVCacheUsage
                           type: string
                       required:
                       - target

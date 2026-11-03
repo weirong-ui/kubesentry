@@ -39,6 +39,16 @@ const (
 	defaultErrQuery = `sum(rate(http_requests_total{app="{app}",namespace="{namespace}",status=~"5.."}[{window}]))` +
 		` / clamp_min(sum(rate(http_requests_total{app="{app}",namespace="{namespace}"}[{window}])), 0.001)`
 
+	// 推理场景（AI inference）：默认对齐 vLLM 的 /metrics 指标名。
+	// 这三条是"AI 推理弹性"的最小信号集——
+	//   队列深度：请求在排队 = GPU 算力不够分，最直接的扩容信号
+	//   TTFT：首 token 延迟是用户体感的头号指标，恶化说明 batch 太大/抢占频繁
+	//   KV cache 占用：接近打满会触发请求抢占（preemption），延迟雪崩的前兆
+	// 用 SGLang / TGI / 自研推理框架时用 WithQuery 换成对应指标名。
+	defaultQueueDepthQuery = `sum(vllm:num_requests_waiting{app="{app}",namespace="{namespace}"})`
+	defaultTTFTQuery       = `histogram_quantile(0.95, sum by (le) (rate(vllm:time_to_first_token_seconds_bucket{app="{app}",namespace="{namespace}"}[{window}])))`
+	defaultKVCacheQuery    = `avg(vllm:gpu_cache_usage_perc{app="{app}",namespace="{namespace}"})`
+
 	defaultWindow = "5m"
 )
 
@@ -61,9 +71,12 @@ func NewPrometheusSource(endpoint string) *PrometheusSource {
 		Window:   defaultWindow,
 		Client:   &http.Client{Timeout: 5 * time.Second},
 		Queries: map[appsv1alpha1.MetricType]string{
-			appsv1alpha1.MetricQPS:        defaultQPSQuery,
-			appsv1alpha1.MetricP99Latency: defaultP99Query,
-			appsv1alpha1.MetricErrorRate:  defaultErrQuery,
+			appsv1alpha1.MetricQPS:          defaultQPSQuery,
+			appsv1alpha1.MetricP99Latency:   defaultP99Query,
+			appsv1alpha1.MetricErrorRate:    defaultErrQuery,
+			appsv1alpha1.MetricQueueDepth:   defaultQueueDepthQuery,
+			appsv1alpha1.MetricTTFT:         defaultTTFTQuery,
+			appsv1alpha1.MetricKVCacheUsage: defaultKVCacheQuery,
 		},
 	}
 }
@@ -143,6 +156,29 @@ func (p *PrometheusSource) DesiredReplicas(ctx context.Context, app *appsv1alpha
 			step = 1
 		}
 		return current + step, true
+
+	case appsv1alpha1.MetricQueueDepth:
+		// 队列深度与 QPS 同型：desired = ceil(总排队数 / 单 Pod 目标排队数)。
+		// 队列清空（0）是真实信号不是无数据——返回 1 让 Decide 钳到 minReplicas
+		if val <= 0 {
+			return 1, true
+		}
+		return int32(math.Ceil(val / targetVal)), true
+
+	case appsv1alpha1.MetricTTFT:
+		// 与 P99 同型：只在超阈值时按比例扩，健康时弃权
+		if val <= targetVal {
+			return 0, false
+		}
+		return int32(math.Ceil(float64(current) * val / targetVal)), true
+
+	case appsv1alpha1.MetricKVCacheUsage:
+		// KV cache 占用率（0~1）：超目标按比例扩——占用 0.95 / 目标 0.85 ≈ 扩 12%。
+		// 打满会触发推理引擎抢占在途请求，是延迟雪崩前兆，必须在打满前扩
+		if val <= targetVal {
+			return 0, false
+		}
+		return int32(math.Ceil(float64(current) * val / targetVal)), true
 	}
 	return 0, false
 }
@@ -153,14 +189,22 @@ func parseTarget(t appsv1alpha1.MetricTarget) (float64, bool) {
 		return 0, false
 	}
 	switch t.Type {
-	case appsv1alpha1.MetricQPS, appsv1alpha1.MetricErrorRate:
+	case appsv1alpha1.MetricQPS, appsv1alpha1.MetricQueueDepth:
 		v, err := strconv.ParseFloat(t.Target, 64)
 		if err != nil || v <= 0 {
 			return 0, false
 		}
 		return v, true
 
-	case appsv1alpha1.MetricP99Latency:
+	case appsv1alpha1.MetricErrorRate, appsv1alpha1.MetricKVCacheUsage:
+		// 占比类信号：必须落在 (0,1)
+		v, err := strconv.ParseFloat(t.Target, 64)
+		if err != nil || v <= 0 || v >= 1 {
+			return 0, false
+		}
+		return v, true
+
+	case appsv1alpha1.MetricP99Latency, appsv1alpha1.MetricTTFT:
 		// 支持 "200ms" / "0.2" / "1s"。裸数字按秒处理。
 		if v, err := strconv.ParseFloat(t.Target, 64); err == nil && v > 0 {
 			return v, true
