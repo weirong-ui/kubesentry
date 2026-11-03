@@ -7,7 +7,7 @@
 [![Go Version](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go)](https://go.dev)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.28%2B-326CE5?logo=kubernetes)](https://kubernetes.io)
 [![CI](https://github.com/weirong-ui/kubestasis/actions/workflows/ci.yml/badge.svg)](https://github.com/weirong-ui/kubestasis/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-100%20cases-brightgreen)](#开发)
+[![Tests](https://img.shields.io/badge/tests-103%20cases-brightgreen)](#开发)
 [![License](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
 > 一个基于 controller-runtime 的 Kubernetes Operator：不只让应用"活着"，还能让它**自己变强、自己疗伤**。
@@ -44,7 +44,7 @@
 | Admission Webhook | ✅ 已实现 | Validating（禁 latest、min≤max、target 按类型解析、金丝雀边界）+ Mutating（replicas 跟随 minReplicas）；自签证书方案不依赖 cert-manager；CI 负向用例覆盖 |
 | 手写 mini-Informer | ✅ 已实现 | `pkg/miniinformer`：ListWatch → DeltaFIFO → Store → Handler + WorkQueue，11 用例 |
 | 镜像签名 + 集群准入策略 | ✅ 已实现 | CI cosign keyless 签 GHCR digest 并自验；`policies/` 下 Kyverno 策略 |
-| 单元测试 | ✅ 100 用例 | scaler 37 + controller 8 + healer 30 + webhook 14 + miniinformer 11；envtest 第 3 周 |
+| 单元测试 | ✅ 103 用例 | scaler 37 + controller 8 + healer 33 + webhook 14 + miniinformer 11；envtest 第 3 周 |
 | Helm Chart | 🗓 规划中 | 第 3 周 |
 
 ## 为什么做这个项目？

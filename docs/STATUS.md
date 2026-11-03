@@ -21,7 +21,7 @@
 | `go build ./...` | ✅ | 通过（Go 1.27.3 本机，module `go 1.22.0`；k8s v0.31.1 / controller-runtime v0.19.0） |
 | `go vet ./...` | ✅ | 无输出 |
 | `gofmt -l` | ✅ | 无未格式化文件 |
-| `go test ./...` | ✅ | **79 个用例**全绿（scaler 27 + controller 8 + healer 30 + webhook 14） |
+| `go test ./...` | ✅ | **79 个用例**全绿（scaler 27 + controller 8 + healer 33 + webhook 14） |
 | 部署链路 | ✅ | Docker Desktop k8s v1.36.1：`kubectl apply` CRD+RBAC+Manager → 控制器 Pod `1/1 Running` |
 | 创建资源 | ✅ | `deployment.apps/sample 2/2`、`service/sample ClusterIP 80/TCP`、`endpoints 10.244.0.9,10.244.0.10` |
 | 状态真实性 | ✅ | `NAME sample PHASE Stable READY 2 DESIRED 2`；`status.conditions` 出现 `Available=True / Progressing=False` |
@@ -56,7 +56,7 @@
 | mini-Informer | ✅ 已实现 | `pkg/miniinformer/`：手写 ListWatch → DeltaFIFO（按键压缩去重）→ Store → Handler + 控制器侧 WorkQueue（幂等+不漏），泛型实现约 400 行，11 个用例含断线重列；与 client-go 的取舍差异逐条写在包注释与 [README](../pkg/miniinformer/README.md) |
 | 镜像签名与准入策略 | ✅ 已实现 | CI image job 用 cosign keyless 签 GHCR digest（GitHub OIDC → Fulcio → Rekor）并签完自验；`policies/kyverno-kubestasis.yaml`：禁 latest/无 tag + kubestasis-system 强制验签。CKS 考点变成可展示证据 |
 | Helm Chart | 🗓 规划中 | `charts/` 不存在，第 3 周在 kustomize 之后再做 |
-| 单元测试 | ✅ 100 用例 | scaler 37 + controller 8 + healer 30 + webhook 14 + miniinformer 11。envtest 待第 3 周 |
+| 单元测试 | ✅ 103 用例 | scaler 37 + controller 8 + healer 33 + webhook 14 + miniinformer 11。envtest 待第 3 周 |
 | 压测与 HPA 对比表 | 🗓 规划中 | 第 3 周——这是证明"迟滞算法优于原生 HPA"的唯一硬证据，优先级最高 |
 
 ## 四、11.02 夜这一轮改了什么（P0 收尾）
@@ -125,7 +125,7 @@
 | 2026-11-02 夜 | P0 收尾（脚手架、Service、Status/Conditions、Events、CI） | 链路跑通：CR → Deploy+Service → Available |
 | 2026-11-03 | P1 指标源 + 31 个单测 + 真集群端到端验证 + 仓库描述/topics + GitHub 主页 README | 伸缩引擎从"休眠"到"集群验证过"；0 测试 → 31 用例；修掉 omitempty 结构体序列化 bug |
 | 2026-11-03 下午 | P1 真实指标源演示（真 Prometheus + 打流）+ P2 自愈引擎落地 + 26 个 healer 用例 | P1/P2 从"未验证"到"真集群跑通"；31 → 57 用例；踩到并修复"静态 Service 抓取导致 counter 非单调"的指标坑 |
-| 2026-11-03 晚 | P3 Webhook + P4 mini-Informer + 评审三连修复（冲突写路径/魔法数字可配/CI 覆盖 P2）+ AI 推理信号 + cosign/Kyverno + 更名 KubeStasis | 57 → 100 用例；P0–P4 全闭环；真集群复现并修掉两个新坑（见下） |
+| 2026-11-03 晚 | P3 Webhook + P4 mini-Informer + 评审三连修复（冲突写路径/魔法数字可配/CI 覆盖 P2）+ AI 推理信号 + cosign/Kyverno + 更名 KubeStasis | 57 → 103 用例；P0–P4 全闭环；真集群复现并修掉两个新坑（见下） |
 
 ### 11.03 晚新踩的坑（已修，写进记忆）
 
@@ -133,3 +133,4 @@
 2. **自愈冷却期不能短于故障探测周期**：CrashLoop 的"删 Pod → 再进 CrashLoopBackOff"周期约 1-2 分钟；冷却 90s 时"冷却期内复发才升级"永不触发，L1 把 crash 副本从 1 扩到 3 空转。默认 3 分钟刚好覆盖
 3. **caBundle 在 `clientConfig` 下**：patch 路径 `/webhooks/N/clientConfig/caBundle`，不是 `/webhooks/N/caBundle`
 4. **rollout 完成 ≠ webhook 可服务**：endpoint 就绪有秒级延迟，CI 负向用例要对 InternalError 重试、只对 Forbidden 断言
+5. **乒乓回滚**（本轮 kind CI 抓到的真 bug）：回滚到 v1 成功后，旧 RS 的 crash Pod 还没清完，下一轮 Inspect 仍不健康 → "上一个不同镜像"恰好是刚滚走的 v2-crash → 滚回坏版本（v2→v1→v2，同一秒内两次 L3；DD 本地没暴露是因为缓存/滚动时序碰巧错开）。修复：`Inspect` 报告携带 `BadImages`（不健康 Pod 的镜像），L3 选版排除坏镜像；CI 增加"回滚后再盯 3 分钟"的防乒乓断言。教训：**回滚类逻辑的验证不能停在"看到回滚发生"，必须验证"停在回滚结果上"**

@@ -165,3 +165,94 @@ func TestInspect_AppLevelRestartThreshold(t *testing.T) {
 		t.Fatal("restartCount=3 below engine default 5 must NOT be flagged")
 	}
 }
+
+// ---------- 乒乓回滚回归（2026-11-03 kind CI 翻车实录） ----------
+
+// 场景还原：回滚到 v1 成功后，旧 RS 的 crash Pod 还没清完，下一轮 Inspect 仍
+// 不健康。若"上一个不同镜像"不加排除，刚滚走的 v2-crash 会被当成回滚目标
+// 滚回来（v2-crash→v1→v2-crash 乒乓）。
+func TestRollback_ExcludesBadImages_NoPingPong(t *testing.T) {
+	app := newApp("demo", 2)
+	app.Spec.Image = "demo:v1" // 已经滚回 v1
+	deploy := newDeploy("demo", "demo:v1")
+	mkRS := func(name, rev, image string) *appsv1.ReplicaSet {
+		return &appsv1.ReplicaSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: name, Namespace: "default",
+				Labels:      map[string]string{labelApp: "demo"},
+				Annotations: map[string]string{revisionAnnotation: rev},
+			},
+			Spec: appsv1.ReplicaSetSpec{Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "demo", Image: image}}},
+			}},
+		}
+	}
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(app,
+		mkRS("demo-r1", "1", "demo:v1"),
+		mkRS("demo-r2", "2", "demo:v2-crash"), // 事故现场，绝不能滚回去
+	).Build()
+
+	rev, err := newEngine().Rollback(context.Background(), c, app, deploy, "demo:v2-crash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev != 0 {
+		t.Fatalf("bad image must be excluded; want rev 0 (no target), got %d", rev)
+	}
+	var got appsv1alpha1.App
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "demo", Namespace: "default"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Spec.Image != "demo:v1" {
+		t.Fatalf("image ping-ponged to %s", got.Spec.Image)
+	}
+}
+
+// 排除坏镜像后应选更早的好版本，而不是"没有目标"。
+func TestRollback_SkipsBadImagePicksOlder(t *testing.T) {
+	app := newApp("demo", 2)
+	app.Spec.Image = "demo:v3"
+	deploy := newDeploy("demo", "demo:v3")
+	mkRS := func(name, rev, image string) *appsv1.ReplicaSet {
+		return &appsv1.ReplicaSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: name, Namespace: "default",
+				Labels:      map[string]string{labelApp: "demo"},
+				Annotations: map[string]string{revisionAnnotation: rev},
+			},
+			Spec: appsv1.ReplicaSetSpec{Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "demo", Image: image}}},
+			}},
+		}
+	}
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(app,
+		mkRS("demo-r1", "1", "demo:v1"),
+		mkRS("demo-r2", "2", "demo:v2-bad"), // v2 也是坏的
+		mkRS("demo-r3", "3", "demo:v3"),     // 当前
+	).Build()
+
+	rev, err := newEngine().Rollback(context.Background(), c, app, deploy, "demo:v2-bad")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev != 1 {
+		t.Fatalf("want rev 1 (skip bad v2), got %d", rev)
+	}
+}
+
+func TestInspect_RecordsBadImages(t *testing.T) {
+	app := newApp("demo", 1)
+	bad := newPod("bad-1", "demo", func(cs *corev1.ContainerStatus) {
+		cs.State.Waiting = &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}
+	})
+	bad.Spec.Containers = []corev1.Container{{Name: "demo", Image: "demo:v2-crash"}}
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(app, bad).Build()
+
+	report := newEngine().Inspect(context.Background(), c, app)
+	if !report.Unhealthy {
+		t.Fatal("crashloop pod must be flagged")
+	}
+	if len(report.BadImages) != 1 || report.BadImages[0] != "demo:v2-crash" {
+		t.Fatalf("BadImages = %v, want [demo:v2-crash]", report.BadImages)
+	}
+}

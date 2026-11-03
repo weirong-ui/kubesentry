@@ -29,6 +29,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"time"
 
@@ -73,6 +74,11 @@ type Report struct {
 	Signals []string
 	// Pods 不健康 Pod 的名字，L2 动作的对象
 	Pods []string
+	// BadImages 不健康 Pod 正在运行的镜像。L3 回滚必须排除它们——
+	// 否则回滚完成后旧 RS 里的 crash Pod 还没清完，下一轮 Inspect 仍不健康，
+	// 会把"刚滚走的坏版本"当成"上一个不同镜像"再滚回来（乒乓回滚，
+	// 2026-11-03 kind CI 实测翻车：v2-crash→v1→v2-crash）
+	BadImages []string
 	// SuggestedLevel 建议的自愈等级
 	SuggestedLevel Level
 }
@@ -198,6 +204,12 @@ func (e *Engine) Inspect(ctx context.Context, c client.Client, app *appsv1alpha1
 		}
 		if podUnhealthy {
 			report.Pods = append(report.Pods, pod.Name)
+			// 记下坏 Pod 的镜像，L3 回滚选版时排除
+			for _, ctnr := range pod.Spec.Containers {
+				if !slices.Contains(report.BadImages, ctnr.Image) {
+					report.BadImages = append(report.BadImages, ctnr.Image)
+				}
+			}
 		}
 	}
 
@@ -264,7 +276,7 @@ func (e *Engine) Apply(ctx context.Context, c client.Client, app *appsv1alpha1.A
 	case L2Isolate:
 		return e.isolate(ctx, c, app, report.Pods, now)
 	default:
-		return e.rollbackAction(ctx, c, app, deploy, now)
+		return e.rollbackAction(ctx, c, app, deploy, now, report.BadImages)
 	}
 }
 
@@ -346,10 +358,11 @@ func (e *Engine) isolate(ctx context.Context, c client.Client, app *appsv1alpha1
 }
 
 // rollbackAction L3：回滚到上一个不同镜像的 ReplicaSet 版本。
+// report.BadImages 必须排除——正在崩溃的镜像不是"回滚目标"，是"事故现场"。
 func (e *Engine) rollbackAction(ctx context.Context, c client.Client, app *appsv1alpha1.App,
-	deploy *appsv1.Deployment, now time.Time) (*Action, error) {
+	deploy *appsv1.Deployment, now time.Time, badImages []string) (*Action, error) {
 
-	rev, err := e.Rollback(ctx, c, app, deploy)
+	rev, err := e.Rollback(ctx, c, app, deploy, badImages...)
 	if err != nil {
 		return nil, fmt.Errorf("L3 rollback: %w", err)
 	}
@@ -366,11 +379,12 @@ func (e *Engine) rollbackAction(ctx context.Context, c client.Client, app *appsv
 
 // Rollback 执行回滚：读取 ReplicaSet 修订历史，回退到上一个不同镜像的版本。
 //
+// exclude 里的镜像（通常是 Inspect 报告的坏镜像）不算回滚目标。
 // 返回回滚到的 revision；0 表示没有可回滚的历史版本（不是错误）。
 // 实现上改的是 App.Spec.Image 而不是 Deployment——回到 CR 层面让 Reconcile
 // 自然收敛，这是声明式 API 的优雅之处：回滚和正常发布走同一条路径。
 func (e *Engine) Rollback(ctx context.Context, c client.Client, app *appsv1alpha1.App,
-	deploy *appsv1.Deployment) (int64, error) {
+	deploy *appsv1.Deployment, exclude ...string) (int64, error) {
 
 	var rsList appsv1.ReplicaSetList
 	if err := c.List(ctx, &rsList,
@@ -395,6 +409,9 @@ func (e *Engine) Rollback(ctx context.Context, c client.Client, app *appsv1alpha
 		img := rs.Spec.Template.Spec.Containers[0].Image
 		if img == currentImage {
 			continue // 当前版本不算回滚目标
+		}
+		if slices.Contains(exclude, img) {
+			continue // 坏镜像不算回滚目标（防乒乓回滚）
 		}
 		if best == nil || rev > best.revision {
 			best = &candidate{revision: rev, image: img}

@@ -186,8 +186,18 @@ jobs:
             echo "FAIL: 10 分钟内没有等到自动回滚"
             exit 1
           fi
+          # 防乒乓回归（本轮 CI 实测翻车修复）：回滚后继续盯 3 分钟，
+          # image 必须停在 v1——旧 RS 的 crash Pod 未清完时不得把坏版本滚回来
+          for j in $(seq 1 18); do
+            img=$(kubectl get app heal-demo -o jsonpath='{.spec.image}')
+            if [ "$img" != "kubestasis-demoapp:v1" ]; then
+              echo "FAIL: 回滚后乒乓回 $img"
+              exit 1
+            fi
+            sleep 10
+          done
           kubectl wait --for=condition=Available app/heal-demo --timeout=240s
-          echo "==> 自愈完成：回滚后恢复 Available"
+          echo "==> 自愈完成：回滚后恢复 Available 且未乒乓"
       - name: Dump diagnostics on failure
         if: failure()
         run: |
