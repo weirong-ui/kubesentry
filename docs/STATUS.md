@@ -1,7 +1,7 @@
 # KubeStasis 实现状态（真实账本）
 
 > 本文件是**唯一可信的能力清单**。README 的一切对外描述以此为准，每完成一项就把状态改掉。
-> 最后更新：2026-11-04（补 vs 原生 HPA 压测对比、App 支持 resources/env、CRD group 更名 kubestasis.io）
+> 最后更新：2026-11-04 晚（补就绪/存活探针、缩容稳定窗口、Helm Chart、决策指标导出）
 > 验收口径：代码能在干净集群上 `deploy → apply App → Available`，且有可复现的证据。
 > ⚠️ 项目原名 KubeSentry，2026-11-03 更名 KubeStasis；CRD group 于 2026-11-04 由 `apps.sentry.io` 改为 `kubestasis.io`（不再沿用第三方商标）。
 
@@ -13,6 +13,7 @@
 **准入控制**（Mutating 默认值注入 + Validating 准入校验，自签证书方案不依赖 cert-manager，`make deploy-webhook` 一键起）。
 **P2 自愈链路已进入 CI e2e**（kind 集群里真跑 crash 镜像 → 自动回滚断言），自愈能力不再依赖人工实测。
 **伸缩对比**：同镜像、同资源、同流量时间线下与原生 HPA 的对照实验，见 [docs/benchmark/hpa-vs-kubestasis.md](benchmark/hpa-vs-kubestasis.md)（原始采样 CSV 入库，可复算）。
+**11-04 晚补的四件"可交付性"短板**：托管 Deployment 的就绪/存活探针（省略时默认注入 TCP 就绪探针，`Available` 不再是"进程起来了"的乐观信号）、缩容稳定窗口（压测 run5 抓到的误缩容缺口闭合）、Helm Chart（`helm upgrade --install` 全链路真集群验证）、伸缩决策指标导出（`kubestasis_scaling_decisions_total` 等 4 个指标，"为什么没扩"变成一条 PromQL）。
 
 ## 二、体检与验证结果（2026-11-02 实测，11-03 晚更新）
 
@@ -21,7 +22,7 @@
 | `go build ./...` | ✅ | 通过（Go 1.27.3 本机，module `go 1.22.0`；k8s v0.31.1 / controller-runtime v0.19.0） |
 | `go vet ./...` | ✅ | 无输出 |
 | `gofmt -l` | ✅ | 无未格式化文件 |
-| `go test ./...` | ✅ | **113 个用例**全绿（scaler 46 + controller 11 + healer 24 + webhook 21 + miniinformer 11，含子测试） |
+| `go test ./...` | ✅ | **137 个用例**全绿（scaler 59 + controller 16 + healer 24 + webhook 24 + miniinformer 11 + metrics 3，含子测试） |
 | 部署链路 | ✅ | Docker Desktop k8s v1.36.1：`kubectl apply` CRD+RBAC+Manager → 控制器 Pod `1/1 Running` |
 | 创建资源 | ✅ | `deployment.apps/sample 2/2`、`service/sample ClusterIP 80/TCP`、`endpoints 10.244.0.9,10.244.0.10` |
 | 状态真实性 | ✅ | `NAME sample PHASE Stable READY 2 DESIRED 2`；`status.conditions` 出现 `Available=True / Progressing=False` |
@@ -55,8 +56,11 @@
 | Admission Webhook | ✅ 已实现 | `internal/webhook/`：Mutating（replicas 跟随 minReplicas 的跨字段默认）+ Validating（禁 latest/无 tag 镜像、min≤max、replicas 落区间、指标 target 按类型可解析、同类型不重复、金丝雀阈值与窗口下限；聚合报错一次列全）。`make deploy-webhook`：overlay + `hack/webhook-certs.sh` 自签证书 + caBundle 注入，不依赖 cert-manager。**CI e2e 负向用例**：`:latest` 被拒、默认值注入生效 |
 | mini-Informer | ✅ 已实现 | `pkg/miniinformer/`：手写 ListWatch → DeltaFIFO（按键压缩去重）→ Store → Handler + 控制器侧 WorkQueue（幂等+不漏），泛型实现约 400 行，11 个用例含断线重列；与 client-go 的取舍差异逐条写在包注释与 [README](../pkg/miniinformer/README.md) |
 | 镜像签名与准入策略 | ✅ 已实现 | CI image job 用 cosign keyless 签 GHCR digest（GitHub OIDC → Fulcio → Rekor）并签完自验；`policies/kyverno-kubestasis.yaml`：禁 latest/无 tag + kubestasis-system 强制验签。CKS 考点变成可展示证据 |
-| Helm Chart | 🗓 规划中 | `charts/` 不存在，当前安装形态只有 kustomize。**未完成就是未完成**，README 不把它写成能力 |
-| 单元测试 | ✅ 113 用例 | scaler 46 + controller 11 + healer 24 + webhook 21 + miniinformer 11 = 113（用 `--- PASS` 行数按包实测，和 §二 同一口径）。envtest 仍未做——现在的控制循环回归靠 kind e2e |
+| 就绪/存活探针 | ✅ 已实现 | `spec.readiness` / `spec.liveness`（`HTTPGet`/`TCPSocket`，path/period/timeout/initialDelay/failureThreshold 可配）。**readiness 省略时默认注入 TCPSocket 探针（端口取 spec.port）**——托管应用默认具备"端口能连上才算就绪"的语义；liveness 只在显式声明时注入（存活探针杀进程的代价比就绪探针高，不敢默认猜）。webhook 校验 HTTP path 必须以 `/` 开头、TCP 配 path 只警告不阻断。真集群验证：显式 HTTPGet 注入正确、Pod Ready、无 Unhealthy 事件 |
+| 缩容稳定窗口 | ✅ 已实现 | `scaling.scaleDownStabilizationSeconds`（默认 60s，0 关闭）+ `status.belowTargetSince`：信号需持续低于目标满窗口才允许缩容，任一信号高于目标的采样立即重置计时。补的是压测 run5 抓到的误缩容缺口（突发起点 4→3→13s 又扩回 5）。真集群验证：3 副本零流量下，窗口期内纹丝不动，到点后**单步** 3→2（不连跳——status 先于 spec 写入的竞态修复同时被验证） |
+| 伸缩决策指标导出 | ✅ 已实现 | `internal/metrics/`：`kubestasis_scaling_decisions_total{namespace,app,action,reason}`（reason 用固定枚举 ReasonCode，不是自由文本——防 label 基数爆炸）+ `desired/current/signal_replicas` 三个 gauge；App 删除时 `Forget` 清理防残留。真集群验证：4 个指标全部出现在 `/metrics` 端点，含一条 `ScaleDown` 决策记录 |
+| Helm Chart | ✅ 已实现 | `charts/kubestasis`（0.1.0）：CRD 放 `crds/`、SA/RBAC/Deployment/metrics Service/webhook 全模板化；webhook 证书二选一——默认 `helm genSelfSignedCert` 渲染期生成（零外部依赖），或 `--set webhook.certManager.enabled=true` 走 cert-manager；`helm lint` + `template` + server-side dry-run + 真集群 `upgrade --install`（p9 镜像）+ 滚动升级全部验证。注意事项与 values 说明见 [charts/kubestasis/README.md](../charts/kubestasis/README.md) |
+| 单元测试 | ✅ 137 用例 | scaler 59 + controller 16 + healer 24 + webhook 24 + miniinformer 11 + metrics 3（用 `--- PASS` 行数按包实测，和 §二 同一口径）。envtest 仍未做——现在的控制循环回归靠 kind e2e |
 | 压测与 HPA 对比表 | ✅ 已完成 | 2026-11-04：同镜像/同资源/同流量下 vs 原生 HPA（CPU 50%）的对照实验，5 秒粒度采样入库 `docs/benchmark/data.csv`，报告见 [docs/benchmark/hpa-vs-kubestasis.md](benchmark/hpa-vs-kubestasis.md)。结论有限定条件，报告里写清了口径与失效风险 |
 
 ## 四、11.02 夜这一轮改了什么（P0 收尾）
@@ -119,23 +123,23 @@
 | **无侵入指标采集（eBPF）** | 需要内核态开发、节点特权与版本兼容矩阵；收益是省掉应用埋点，但本项目假定应用暴露 Prometheus 指标 | 用 Pixie/eBPF exporter 作为 MetricsSource 的另一种实现即可，不必自研 |
 | **真正的流量切分式金丝雀**（按权重引流） | 现在做的是"发布后观察错误率，超阈值回滚"——观察真实流量，不做权重控制。名字叫 canary，但不是流量治理 | 引入 Gateway API / Istio 的权重路由；Webhook 侧还要管 VirtualService 生命周期 |
 | **控制面高可用** | 单副本 manager + leader election 未开启；个人项目的集群规模用不上，开了反而增加演示复杂度 | 打开 `--leader-elect`、副本数 ≥2、配合 PDB 与反亲和 |
-| **伸缩决策的可观测性**（`kubestasis_scaling_decisions_total`、Grafana 面板） | 决策过程目前只在 Events 和日志里；导出指标是"锦上添花"，不影响正确性 | 接 controller-runtime 的 metrics registry + 一组 recording rules；工作量不大，排期在后 |
+| **决策可观测性的最后一公里**（Grafana 面板） | 指标与 recording rules 已就位（`kubestasis_scaling_*` 四个指标 + `deploy/monitoring/recording-rules.yaml`），但没做现成的 Grafana dashboard JSON | 一个 dashboard + `dashboards/` 入库，用户 import 即用 |
 | **envtest 级别的控制循环回归** | 现在是 fake client 单测（快、但不跑真实 apiserver 默认值/校验）+ kind e2e（真、但慢且只覆盖三条链路）；中间层确实缺 | 引入 envtest（需要 etcd/kube-apiserver 二进制），把 CRD 默认值、webhook 联动、status 子资源这些"只有真 apiserver 才有的行为"纳入回归 |
 | **升级/迁移路径**（CRD 版本演进、v1alpha1 → v1beta1） | 还没有真实用户，谈 conversion webhook 为时过早 | 定义 v1beta1 + conversion webhook + 存储版本迁移演练 |
 | **安全加固的完整闭环**（NetworkPolicy、seccomp、RBAC 最小化审计） | 已有非 root、只读根文件系统、镜像签名校验；但没有逐条做 CIS Benchmark 对照 | 用 kube-bench / Kubescape 扫一遍，按报告逐项修 |
 | **压测结论的普适性** | 见 [压测报告](benchmark/hpa-vs-kubestasis.md) 的"口径限定"一节：单节点、单应用、CPU 忙等模拟，结论只在同口径下成立 | 多节点、多应用混部、真实业务流量回放 |
-| **缩容没有稳定窗口**（短促低谷会触发误缩容） | 压测 run5 抓到实证：突发#2 起点 loadgen 还没出流量（1m 窗口均值 30-50），控制器按信号把 4 缩到 3，13s 后又扩回 5。HPA 的 300s 稳定窗口就是防这个的，我们没做——加"信号需持续低于目标 N 秒才缩容"是语义级改动（新 CRD 字段 + 状态机），不想在参数没校准的情况下拍一个数 | 在 AppStatus 里记"连续低于目标的评估次数"，连续 ≥2 次才允许缩容；配合 envtest 回归 |
+| **缩容稳定窗口的默认值没经过大样本校准** | 窗口机制已实现（`scaleDownStabilizationSeconds` 默认 60s + `belowTargetSince`），但 60s 这个数只在单节点单应用口径下验证过——它挡住了 run5 那种"突发起点"误缩容，代价是纯空闲场景回到 1 副本再慢 60s（压测报告里"回到 1 慢 65s"的一部分就是它） | 真实流量回放下对比 0/60/300s 三档；如果长期看不出差异，把默认改回 0 并在文档里写明取舍 |
 
 
 
 ## 八、下一步（11.05 起）
 
 1. ~~P1 指标源~~ / ~~P2 自愈~~ / ~~P3 Webhook~~ / ~~P4 mini-Informer~~ / ~~压测对比~~：**全部完成**（2026-11-03 ~ 11-04）
-2. **第 3 周剩下的硬骨头**：
+2. ~~Helm Chart~~ / ~~决策指标导出~~ / ~~就绪探针~~ / ~~缩容稳定窗口~~：**11-04 晚完成**
+3. 剩下的硬骨头：
    - envtest 集成测试（控制循环级回归，补 fake client 与 kind e2e 之间的断层）
-   - Helm Chart（kustomize 之外的第二种安装形态）
-   - 决策指标导出 + Grafana 面板（让"为什么这次没扩"可被查询，而不是翻日志）
-3. 可选增强（不承诺）：Kyverno 策略进 CI kind 集群实测、CRD v1beta1 + conversion
+   - Grafana 面板入库（指标和 recording rules 已就位）
+4. 可选增强（不承诺）：Kyverno 策略进 CI kind 集群实测、CRD v1beta1 + conversion
 
 ## 九、每日勾选
 
@@ -147,6 +151,7 @@
 | 2026-11-03 下午 | P1 真实指标源演示（真 Prometheus + 打流）+ P2 自愈引擎落地 + 26 个 healer 用例 | P1/P2 从"未验证"到"真集群跑通"；31 → 57 用例；踩到并修复"静态 Service 抓取导致 counter 非单调"的指标坑 |
 | 2026-11-03 晚 | P3 Webhook + P4 mini-Informer + 评审三连修复（冲突写路径/魔法数字可配/CI 覆盖 P2）+ AI 推理信号 + cosign/Kyverno + 更名 KubeStasis | 57 → 103 用例；P0–P4 全闭环；真集群复现并修掉两个新坑（见下） |
 | 2026-11-04 | 对照压测（HPA vs KubeStasis）+ CRD resources/env 透传 + webhook 校验配套 | 五轮压测，前四轮全部被自己推翻（详见压测报告）；修复渐进缩容跨步竞态（status 先于 spec 写入）；报告与原始 CSV 入库；103 → 113 用例 |
+| 2026-11-04 晚 | 就绪/存活探针 + 缩容稳定窗口 + Helm Chart + 决策指标导出 | 113 → 137 用例；`Available` 语义修正（有真探针了）；run5 误缩容缺口闭合；`helm upgrade --install` 真集群验证（含滚动升级 p8→p9）；踩到"kustomize 与 Helm 双装导致两套 webhook 打架"的坑（见下） |
 
 ### 11.03 晚新踩的坑（已修，写进记忆）
 
@@ -161,3 +166,8 @@
 1. **Prometheus 的 `scrape_timeout` 必须 ≤ `scrape_interval`**：为了扛住饱和 Pod 的慢 `/metrics` 把 timeout 调到 20s，却忘了 interval 还是 5s —— Prometheus 直接拒绝启动、整轮压测的 QPS 信号全为 0（run3 报废）。且它崩得不明显：Pod 在 CrashLoopBackOff，压测脚本照常出数据，只是那一列恒为 0
 2. **写 spec 会立刻触发下一轮 Reconcile，早于本轮 status 写入可见**：冷却窗口若存在 status 里，spec patch 引发的 Reconcile 会读到旧 status → 冷却形同虚设，渐进缩容 3→2→1 在一个采样窗口连跳（run4 报废）。修复：先写 status 再写 spec（watch 事件按 rv 有序，先写的必先到 cache）。教训：**凡是"本轮写、下轮读"的状态，顺序本身就是正确性的一部分**
 3. **压测对照的前提是"两边都真的在跑"**：run3 里 HPA 侧数据完全正常、KS 侧恒为 1 副本——看起来像"KS 不扩容"，实际是监控栈挂了。看对照数据的第一件事是验证**对弱势一侧的输入是否存在**，而不是急着解释结果
+
+### 11.04 晚 Helm 验证踩的坑
+
+1. **kustomize 与 Helm 双装 = 两套 MutatingWebhook 同时生效**：Helm 装到新命名空间后把旧 kustomize manager 缩到 0，但旧 webhook 配置（failurePolicy=Fail）还挂在集群里、service 已无后端 → **所有 App 写入（包括摘 finalizer 的 Update）全部被拒**，App 卡 Terminating、reconcile 只报 connection refused。表象是"新控制器挂了"，实际是死掉的那套在拦人。迁移必须先 `make undeploy` 拆干净旧 webhook 配置，再 `helm install`；已写进 charts/kubestasis/README.md 的"迁移注意"
+2. **CRD 在 Helm `crds/` 目录只在首次 install 创建，升级不更新 schema**：本地验证时新版字段（readiness 等）被 apiserver 静默剪掉（pruning），且 kubectl apply 不报错——`last-applied-configuration` 注解里还留着字段，极具迷惑性。升级 chart 后必须手动 `kubectl apply -f charts/kubestasis/crds/`，NOTES.txt 里已提示

@@ -206,6 +206,34 @@ jobs:
           kubectl describe app heal-demo || true
           kubectl get events --sort-by=.lastTimestamp | tail -40
 
+  # Helm Chart 的有效性：lint + 两种形态渲染 + CRD 副本一致性。
+  # 不需要集群：template 会在本地把 chart 渲染成 YAML，值/默认值写错会直接报错。
+  chart:
+    name: chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+      - name: helm lint
+        run: helm lint charts/kubestasis
+      - name: 渲染两种形态（webhook 关/开）
+        run: |
+          set -e
+          helm template ks charts/kubestasis -n kubestasis-system > /tmp/default.yaml
+          helm template ks charts/kubestasis -n kubestasis-system \
+            --set webhook.enabled=true > /tmp/webhook.yaml
+          grep -q 'kind: Deployment' /tmp/default.yaml
+          grep -q 'kind: ValidatingWebhookConfiguration' /tmp/webhook.yaml
+          echo "rendered: $(grep -c '^kind:' /tmp/default.yaml) + $(grep -c '^kind:' /tmp/webhook.yaml) objects"
+      - name: Chart 里的 CRD 必须与 controller-gen 产物一致
+        run: |
+          # 忘了同步这份副本的后果：helm 装出来的 CRD 少字段，
+          # 新功能"配了但不生效"，且本地 kustomize 安装看起来完全正常
+          diff -u config/crd/bases/kubestasis.io_apps.yaml \
+                  charts/kubestasis/crds/kubestasis.io_apps.yaml
+
   image:
     name: image
     runs-on: ubuntu-latest

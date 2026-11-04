@@ -1,0 +1,21 @@
+apiVersion: v2
+name: kubestasis
+description: 多信号弹性伸缩 + 分级自愈 + 准入控制的 Kubernetes Operator
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - kubernetes
+  - operator
+  - autoscaling
+  - self-healing
+  - admission-webhook
+home: https://github.com/weirong-ui/kubestasis
+sources:
+  - https://github.com/weirong-ui/kubestasis
+maintainers:
+  - name: weirong
+annotations:
+  # CRD 在 crds/ 下，Helm 只会在**首次安装**时创建它们，升级不会更新。
+  # 升级后需要手动 `kubectl apply -f charts/kubestasis/crds/`（NOTES 里也写了）。
+  kubestasis.io/crd-upgrade: manual

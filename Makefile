@@ -77,8 +77,29 @@ undeploy: ## 卸载（含 webhook 形态）
 	$(MANIFEST_WEBHOOK) | $(KUBECTL) delete -f - --ignore-not-found
 	$(MANIFEST) | $(KUBECTL) delete -f - --ignore-not-found
 
+##@ Helm（交付形态：chart 装在别的集群上）
+
+HELM ?= helm
+RELEASE ?= kubestasis
+CHART_NS ?= kubestasis-system
+
+helm-lint: ## 校验 Helm Chart（lint + 两种形态渲染 + CRD 副本一致）
+	$(HELM) lint charts/kubestasis
+	$(HELM) template $(RELEASE) charts/kubestasis -n $(CHART_NS) > /dev/null
+	$(HELM) template $(RELEASE) charts/kubestasis -n $(CHART_NS) --set webhook.enabled=true > /dev/null
+	diff -u config/crd/bases/kubestasis.io_apps.yaml charts/kubestasis/crds/kubestasis.io_apps.yaml
+
+helm-install: ## Helm 安装（IMG_REPO=kubestasis IMG_TAG=p8 PROM_URL=http://... 均可选）
+	$(HELM) upgrade --install $(RELEASE) charts/kubestasis -n $(CHART_NS) --create-namespace \
+		$(if $(IMG_REPO),--set image.repository=$(IMG_REPO)) \
+		$(if $(IMG_TAG),--set image.tag=$(IMG_TAG)) \
+		$(if $(PROM_URL),--set prometheus.url=$(PROM_URL))
+
+helm-uninstall: ## Helm 卸载（CRD 保留，避免误删用户的 App）
+	$(HELM) uninstall $(RELEASE) -n $(CHART_NS)
+
 ##@ Chaos（本地 kind 混沌验证）
 chaos-kill: ## 随机杀 Pod，验证自愈
 	kubectl delete pod -l app.kubernetes.io/managed-by=kubestasis --field-selector=status.phase=Running
 
-.PHONY: help manifests generate fmt lint run test build docker-build docker-push install deploy deploy-webhook undeploy chaos-kill
+.PHONY: help manifests generate fmt lint run test build docker-build docker-push install deploy deploy-webhook undeploy chaos-kill helm-lint helm-install helm-uninstall

@@ -1,0 +1,135 @@
+{{- if .Values.webhook.enabled }}
+{{- $ns := include "kubestasis.namespace" . }}
+{{- $svc := include "kubestasis.webhookServiceName" . }}
+{{- $fullname := include "kubestasis.fullname" . }}
+{{- $certName := printf "%s-webhook-cert" $fullname }}
+{{- $selfSigned := eq (include "kubestasis.selfSignedCerts" .) "true" }}
+{{/*
+  自签证书：自签的叶子证书同时充当 CA（CA 就是它自己）。
+  三个名字都要进 SAN：Service 简称、带 .svc 的 FQDN、带 cluster.local 的 FQDN——
+  apiserver 回连 webhook 用的是 kube-apiserver 的 DNS 解析结果，少一个就
+  "x509: certificate is valid for ..., not ..."。
+
+  变量赋值必须放在这一层：Go template 的 if 会开新作用域，
+  在 if 块里赋的变量出了块就不可见（这是最常见的 chart 报错来源之一）。
+*/}}
+{{- $cn := printf "%s.%s.svc" $svc $ns }}
+{{- $cert := genSelfSignedCert $cn (list "127.0.0.1") (list $cn (printf "%s.%s.svc.cluster.local" $svc $ns)) (int .Values.webhook.selfSignedCertDays) }}
+{{- $caBundle := b64enc $cert.Cert }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $svc }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "kubestasis.labels" . | nindent 4 }}
+    control-plane: controller-manager
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "kubestasis.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: webhook-server
+      port: 443
+      targetPort: webhook-server
+      protocol: TCP
+---
+{{- if $selfSigned }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $certName }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "kubestasis.labels" . | nindent 4 }}
+type: kubernetes.io/tls
+data:
+  tls.crt: {{ b64enc $cert.Cert }}
+  tls.key: {{ b64enc $cert.Key }}
+{{- else }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $certName }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "kubestasis.labels" . | nindent 4 }}
+spec:
+  secretName: {{ $certName }}
+  duration: 8760h
+  renewBefore: 720h
+  dnsNames:
+    - {{ $svc }}.{{ $ns }}.svc
+    - {{ $svc }}.{{ $ns }}.svc.cluster.local
+  issuerRef:
+    {{- toYaml .Values.webhook.certManager.issuerRef | nindent 4 }}
+{{- end }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ $fullname }}-mutating
+  labels:
+    {{- include "kubestasis.labels" . | nindent 4 }}
+  {{- if not $selfSigned }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ $ns }}/{{ $certName }}
+  {{- end }}
+webhooks:
+  - name: {{ $fullname }}-mapp.kubestasis.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: {{ .Values.webhook.failurePolicy }}
+    timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
+    clientConfig:
+      {{- if $selfSigned }}
+      caBundle: {{ $caBundle }}
+      {{- end }}
+      service:
+        name: {{ $svc }}
+        namespace: {{ $ns }}
+        path: /mutate-kubestasis-io-v1alpha1-app
+        port: 443
+    rules:
+      - apiGroups: ["kubestasis.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["apps"]
+        scope: Namespaced
+    namespaceSelector:
+      {{- toYaml .Values.webhook.namespaceSelector | nindent 6 }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ $fullname }}-validating
+  labels:
+    {{- include "kubestasis.labels" . | nindent 4 }}
+  {{- if not $selfSigned }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ $ns }}/{{ $certName }}
+  {{- end }}
+webhooks:
+  - name: {{ $fullname }}-vapp.kubestasis.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: {{ .Values.webhook.failurePolicy }}
+    timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
+    clientConfig:
+      {{- if $selfSigned }}
+      caBundle: {{ $caBundle }}
+      {{- end }}
+      service:
+        name: {{ $svc }}
+        namespace: {{ $ns }}
+        path: /validate-kubestasis-io-v1alpha1-app
+        port: 443
+    rules:
+      - apiGroups: ["kubestasis.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["apps"]
+        scope: Namespaced
+    namespaceSelector:
+      {{- toYaml .Values.webhook.namespaceSelector | nindent 6 }}
+{{- end }}

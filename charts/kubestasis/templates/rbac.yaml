@@ -1,0 +1,50 @@
+{{- if .Values.rbac.create }}
+# ClusterRole 而不是 Role：App 是命名空间级资源，但控制器要 watch 全集群。
+# 权限逐项列出，不用通配符——这也是 docs 里"RBAC 最小权限"那句话的实际形态。
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "kubestasis.fullname" . }}-manager
+  labels:
+    {{- include "kubestasis.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["events", "pods", "services"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/status"]
+    verbs: ["get"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+  - apiGroups: ["kubestasis.io"]
+    resources: ["apps"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+  - apiGroups: ["kubestasis.io"]
+    resources: ["apps/finalizers"]
+    verbs: ["update"]
+  - apiGroups: ["kubestasis.io"]
+    resources: ["apps/status"]
+    verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "kubestasis.fullname" . }}-manager
+  labels:
+    {{- include "kubestasis.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "kubestasis.fullname" . }}-manager
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kubestasis.serviceAccountName" . }}
+    namespace: {{ include "kubestasis.namespace" . }}
+{{- end }}

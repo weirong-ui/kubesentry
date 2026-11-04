@@ -15,7 +15,7 @@
 - [x] 对接 Prometheus HTTP API 查询 QPS / P99 / 错误率（`internal/scaler/prometheus.go`）
 - [x] 多信号伸缩决策 + 冷却窗口 + 迟滞带 + 缩容渐进（真集群：500 QPS 扩 1→5，停流缩 5→1）
 - [x] AI 推理信号扩展：QueueDepth / TTFT / KVCacheUsage（默认 vLLM 指标名，WithQuery 可覆盖，2026-11-03 晚）
-- [ ] 决策过程可观测：Prometheus metrics（`kubestasis_scaling_decisions_total`）+ Grafana 面板
+- [x] 决策过程可观测：Prometheus metrics（`kubestasis_scaling_decisions_total` + 3 个 gauge，2026-11-04 晚）；Grafana 面板仍未做
 - 📦 产出：演示实录 `docs/demo/01-scaling.md`、文章《为什么 HPA 会震荡：手写伸缩决策引擎》
 
 ## P2 — 故障自愈（核心已完成 2026-11-03）
@@ -53,6 +53,7 @@
 |---|---|---|
 | 2026.11.02–03 | P0–P4 全部闭环（进度大幅提前） | 简历一次到位：弹性伸缩 + 自愈 + 准入控制 + 手写 Informer |
 | 2026.11.04 | ✅ 压测对比表（[报告](benchmark/hpa-vs-kubestasis.md)，五轮迭代 + 原始 CSV 入库） | 把"比 HPA 怎样"从定性论证变成可复算的证据——包括输的项 |
-| 2026.11–12 | envtest + Helm Chart + 系列文章补齐 | 补控制循环级回归与第二种安装形态；系列文章完结 |
+| 2026.11.04 晚 | ✅ 探针 / 缩容稳定窗口 / Helm Chart / 决策指标 | v0.1 前的最后四块拼图；`Available` 语义修正、误缩容缺口闭合 |
+| 2026.11–12 | envtest + Grafana 面板 + 系列文章补齐 | 补控制循环级回归与现成面板；系列文章完结 |
 | 2027.01–03 | 掘金系列完结 + 演示视频 | 补充"掘金系列 x N 篇" |
 | 2027.04–05 | 面试题库整理 | 简历定稿，秋招冲刺 |

@@ -1,0 +1,621 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: apps.kubestasis.io
+spec:
+  group: kubestasis.io
+  names:
+    kind: App
+    listKind: AppList
+    plural: apps
+    shortNames:
+    - app
+    singular: app
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.currentReplicas
+      name: Ready
+      type: integer
+    - jsonPath: .status.desiredReplicas
+      name: Desired
+      type: integer
+    - jsonPath: .spec.image
+      name: Image
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: App is the Schema for the apps API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: AppSpec defines the desired state of App.
+            properties:
+              env:
+                description: |-
+                  Env 应用环境变量，透传到托管 Pod。
+                  APP_NAME / POD_NAMESPACE 由控制器强制注入（指标标签约定），因此不允许
+                  在此声明（Webhook 拦截）——否则用户的声明会被静默覆盖，排障时极其费解。
+                  按 name 做 map 合并：kubectl apply 改单个变量不会把整组 env 冲掉。
+                items:
+                  description: EnvVar represents an environment variable present in
+                    a Container.
+                  properties:
+                    name:
+                      description: Name of the environment variable. Must be a C_IDENTIFIER.
+                      type: string
+                    value:
+                      description: |-
+                        Variable references $(VAR_NAME) are expanded
+                        using the previously defined environment variables in the container and
+                        any service environment variables. If a variable cannot be resolved,
+                        the reference in the input string will be unchanged. Double $$ are reduced
+                        to a single $, which allows for escaping the $(VAR_NAME) syntax: i.e.
+                        "$$(VAR_NAME)" will produce the string literal "$(VAR_NAME)".
+                        Escaped references will never be expanded, regardless of whether the variable
+                        exists or not.
+                        Defaults to "".
+                      type: string
+                    valueFrom:
+                      description: Source for the environment variable's value. Cannot
+                        be used if value is not empty.
+                      properties:
+                        configMapKeyRef:
+                          description: Selects a key of a ConfigMap.
+                          properties:
+                            key:
+                              description: The key to select.
+                              type: string
+                            name:
+                              default: ""
+                              description: |-
+                                Name of the referent.
+                                This field is effectively required, but due to backwards compatibility is
+                                allowed to be empty. Instances of this type with an empty value here are
+                                almost certainly wrong.
+                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                              type: string
+                            optional:
+                              description: Specify whether the ConfigMap or its key
+                                must be defined
+                              type: boolean
+                          required:
+                          - key
+                          type: object
+                          x-kubernetes-map-type: atomic
+                        fieldRef:
+                          description: |-
+                            Selects a field of the pod: supports metadata.name, metadata.namespace, `metadata.labels['<KEY>']`, `metadata.annotations['<KEY>']`,
+                            spec.nodeName, spec.serviceAccountName, status.hostIP, status.podIP, status.podIPs.
+                          properties:
+                            apiVersion:
+                              description: Version of the schema the FieldPath is
+                                written in terms of, defaults to "v1".
+                              type: string
+                            fieldPath:
+                              description: Path of the field to select in the specified
+                                API version.
+                              type: string
+                          required:
+                          - fieldPath
+                          type: object
+                          x-kubernetes-map-type: atomic
+                        resourceFieldRef:
+                          description: |-
+                            Selects a resource of the container: only resources limits and requests
+                            (limits.cpu, limits.memory, limits.ephemeral-storage, requests.cpu, requests.memory and requests.ephemeral-storage) are currently supported.
+                          properties:
+                            containerName:
+                              description: 'Container name: required for volumes,
+                                optional for env vars'
+                              type: string
+                            divisor:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              description: Specifies the output format of the exposed
+                                resources, defaults to "1"
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            resource:
+                              description: 'Required: resource to select'
+                              type: string
+                          required:
+                          - resource
+                          type: object
+                          x-kubernetes-map-type: atomic
+                        secretKeyRef:
+                          description: Selects a key of a secret in the pod's namespace
+                          properties:
+                            key:
+                              description: The key of the secret to select from.  Must
+                                be a valid secret key.
+                              type: string
+                            name:
+                              default: ""
+                              description: |-
+                                Name of the referent.
+                                This field is effectively required, but due to backwards compatibility is
+                                allowed to be empty. Instances of this type with an empty value here are
+                                almost certainly wrong.
+                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                              type: string
+                            optional:
+                              description: Specify whether the Secret or its key must
+                                be defined
+                              type: boolean
+                          required:
+                          - key
+                          type: object
+                          x-kubernetes-map-type: atomic
+                      type: object
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              health:
+                description: Health 健康与自愈策略。可省略：省略时不做自愈。指针原因同上。
+                properties:
+                  canary:
+                    description: CanaryPolicy 金丝雀发布观察策略.
+                    properties:
+                      enabled:
+                        default: false
+                        type: boolean
+                      errorRateThreshold:
+                        default: "0.01"
+                        description: ErrorRateThreshold 观察窗口内错误率超过该阈值则自动回滚，如 "0.01".
+                        type: string
+                      observationSeconds:
+                        default: 300
+                        description: ObservationSeconds 新版本发布后的观察窗口时长.
+                        type: integer
+                    required:
+                    - enabled
+                    - errorRateThreshold
+                    - observationSeconds
+                    type: object
+                  restartThreshold:
+                    default: 5
+                    description: |-
+                      RestartThreshold 单容器重启次数达到该值即视为异常信号（兜底识别路径，
+                      主要识别仍靠 waiting.reason / lastState.terminated.reason）。
+                    format: int32
+                    maximum: 100
+                    minimum: 1
+                    type: integer
+                  scaleUpPercent:
+                    default: 20
+                    description: |-
+                      ScaleUpPercent L1 自愈扩容比例（当前副本数的百分比，至少 +1），
+                      受 scaling.maxReplicas 钳制。
+                    maximum: 100
+                    minimum: 1
+                    type: integer
+                  strategy:
+                    default: graduated
+                    description: 'Strategy graduated: 分级自愈; observability-only: 只记录事件不动作.'
+                    enum:
+                    - graduated
+                    - observability-only
+                    type: string
+                required:
+                - strategy
+                type: object
+              image:
+                description: Image 容器镜像，禁止 latest（Validating Webhook 强制）.
+                minLength: 1
+                type: string
+              liveness:
+                description: |-
+                  Liveness 存活探针。**省略时不注入**：错误配置的存活探针会造成
+                  "应用没死却被反复重启"（比如探针依赖的数据库短暂不可用），
+                  这类故障比进程假死更难排查。只有明确知道自己在做什么时才配。
+                properties:
+                  failureThreshold:
+                    description: FailureThreshold 连续失败多少次判定为失败；0 表示用默认值.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  initialDelaySeconds:
+                    description: InitialDelaySeconds 容器启动后等待多久开始探测；0 表示用该探针的默认值.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  path:
+                    description: Path HTTP 探针路径，仅 Type=HTTPGet 时使用，必须以 "/" 开头.
+                    type: string
+                  periodSeconds:
+                    description: PeriodSeconds 探测周期；0 表示用默认值.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  timeoutSeconds:
+                    description: TimeoutSeconds 单次探测超时；0 表示用默认值.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  type:
+                    allOf:
+                    - enum:
+                      - TCPSocket
+                      - HTTPGet
+                    - enum:
+                      - TCPSocket
+                      - HTTPGet
+                    description: Type 探测方式，默认 TCPSocket.
+                    type: string
+                type: object
+              port:
+                default: 8080
+                format: int32
+                maximum: 65535
+                minimum: 1
+                type: integer
+              readiness:
+                description: |-
+                  Readiness 就绪探针。省略时注入默认探针（TCPSocket，端口取 spec.port）——
+                  托管应用默认具备"端口能连上才算就绪"的语义，而不是"容器起来了就算就绪"。
+                properties:
+                  failureThreshold:
+                    description: FailureThreshold 连续失败多少次判定为失败；0 表示用默认值.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  initialDelaySeconds:
+                    description: InitialDelaySeconds 容器启动后等待多久开始探测；0 表示用该探针的默认值.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  path:
+                    description: Path HTTP 探针路径，仅 Type=HTTPGet 时使用，必须以 "/" 开头.
+                    type: string
+                  periodSeconds:
+                    description: PeriodSeconds 探测周期；0 表示用默认值.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  timeoutSeconds:
+                    description: TimeoutSeconds 单次探测超时；0 表示用默认值.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  type:
+                    allOf:
+                    - enum:
+                      - TCPSocket
+                      - HTTPGet
+                    - enum:
+                      - TCPSocket
+                      - HTTPGet
+                    description: Type 探测方式，默认 TCPSocket.
+                    type: string
+                type: object
+              replicas:
+                description: |-
+                  Replicas 期望副本数。故意**不**给 CRD 默认值：CRD 默认值在解码阶段
+                  （Mutating Webhook 之前）就会落进对象，若此处 default=1，webhook 的
+                  "replicas 跟随 scaling.minReplicas" 跨字段默认将永远被抢先填 1 而失效
+                  （11.03 真集群实测确认此顺序）。省略时的兜底：webhook 模式由
+                  Defaulter 注入（跟随 minReplicas）；无 webhook 模式由控制器按 1 处理。
+                format: int32
+                minimum: 0
+                type: integer
+              resources:
+                description: |-
+                  Resources 容器资源声明，透传到托管 Deployment 的 containers[0].resources。
+                  可省略，但强烈建议声明：省略时 Pod 是 BestEffort QoS，既没有 CPU 上限
+                  （单 Pod 可能吃掉整个节点），也无法参与基于利用率的伸缩。
+                properties:
+                  claims:
+                    description: |-
+                      Claims lists the names of resources, defined in spec.resourceClaims,
+                      that are used by this container.
+
+                      This is an alpha field and requires enabling the
+                      DynamicResourceAllocation feature gate.
+
+                      This field is immutable. It can only be set for containers.
+                    items:
+                      description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                      properties:
+                        name:
+                          description: |-
+                            Name must match the name of one entry in pod.spec.resourceClaims of
+                            the Pod where this field is used. It makes that resource available
+                            inside a container.
+                          type: string
+                        request:
+                          description: |-
+                            Request is the name chosen for a request in the referenced claim.
+                            If empty, everything from the claim is made available, otherwise
+                            only the result of this request.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  limits:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Limits describes the maximum amount of compute resources allowed.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                  requests:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Requests describes the minimum amount of compute resources required.
+                      If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                      otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                type: object
+              scaling:
+                description: |-
+                  Scaling 伸缩策略。可省略：省略时不做伸缩决策。
+                  必须是指针：omitempty 对结构体不生效，值类型会把省略的字段
+                  序列化成零值对象（minReplicas=0 等），被 CRD 校验拒绝。
+                properties:
+                  cooldownSeconds:
+                    default: 120
+                    description: CooldownSeconds 冷却窗口：窗口内的缩容请求一律拒绝（扩容可紧急放行）.
+                    minimum: 0
+                    type: integer
+                  errorRateScaleUpPercent:
+                    default: 20
+                    description: |-
+                      ErrorRateScaleUpPercent 错误率超阈值时的单次扩容比例。
+                      错误率无法换算成副本数，只能按比例吸收；连续超阈值会在多轮 Reconcile 里持续扩。
+                    maximum: 100
+                    minimum: 1
+                    type: integer
+                  hysteresisPercent:
+                    default: 10
+                    description: HysteresisPercent 迟滞带：期望副本与当前副本差值 ≤ max(1, current×p%)
+                      时不动作。
+                    maximum: 50
+                    minimum: 0
+                    type: integer
+                  maxReplicas:
+                    default: 3
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  metrics:
+                    description: |-
+                      Metrics 伸缩信号列表，决策时取各信号计算结果的最大值.
+                      可省略：未配置指标时伸缩引擎保持休眠（P1 接入 Prometheus 后才有意义）.
+                    items:
+                      description: MetricTarget 描述一个伸缩信号及其目标值.
+                      properties:
+                        target:
+                          description: |-
+                            Target 目标值，格式随 Type 而定：
+                              QPS:          "1000"   (每 Pod 每秒请求数)
+                              P99Latency:   "200ms"
+                              ErrorRate:    "0.01"   (1%)
+                              QueueDepth:   "5"      (每 Pod 排队请求数)
+                              TTFT:         "1s"     (首 token 延迟，同 P99Latency 格式)
+                              KVCacheUsage: "0.85"   (KV cache 占用率上限)
+                          minLength: 1
+                          type: string
+                        type:
+                          description: Type 指标类型：QPS / P99Latency / ErrorRate
+                          enum:
+                          - QPS
+                          - P99Latency
+                          - ErrorRate
+                          - QueueDepth
+                          - TTFT
+                          - KVCacheUsage
+                          type: string
+                      required:
+                      - target
+                      - type
+                      type: object
+                    maxItems: 5
+                    minItems: 1
+                    type: array
+                  minReplicas:
+                    default: 1
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  scaleDownStabilizationSeconds:
+                    default: 60
+                    description: |-
+                      ScaleDownStabilizationSeconds 缩容稳定窗口：信号必须连续低于目标超过该秒数，
+                      才允许缩容（任一采样回到目标以上就重新计时）。默认 60s，即 15s 巡检下约 4 轮。
+
+                      它补的是"没有缩容稳定窗口"这个设计缺口（见 docs/STATUS.md 第七节）：
+                      HPA 用 300s 稳定窗口防低谷误缩，我们之前只有冷却窗口（防"刚扩完就缩"），
+                      挡不住"突发刚起、均值还没抬上去"的那一两轮。0 表示关闭（恢复旧行为）。
+
+                      为什么这里用指针：0 是**有意义的合法值**（显式关闭），而 int + omitempty
+                      会把 0 吞掉、被 CRD 默认值改回 60——"关闭"这个动作就永远表达不出来。
+                    format: int32
+                    maximum: 3600
+                    minimum: 0
+                    type: integer
+                  scaleDownStepPercent:
+                    default: 20
+                    description: |-
+                      ScaleDownStepPercent 缩容单步最大比例（当前副本数的百分比，至少缩 1 个）。
+                      扩容不受此限：扩容是应急动作，一步到位；缩容必须渐进，避免震荡。
+                    maximum: 100
+                    minimum: 1
+                    type: integer
+                required:
+                - cooldownSeconds
+                - maxReplicas
+                - minReplicas
+                type: object
+            required:
+            - image
+            - port
+            type: object
+          status:
+            description: AppStatus defines the observed state of App.
+            properties:
+              belowTargetSince:
+                description: |-
+                  BelowTargetSince 信号**首次**低于目标（即出现缩容候选）的时间，
+                  缩容稳定窗口的起点。任一轮评估不再低于目标就清空——
+                  语义是"需求要连续低于目标足够久，才认为低谷是真的"。
+                  没有它，突发流量刚起来、1m 均值还没抬上去的那一两轮，
+                  就会把刚扩出来的副本缩回去（压测 run5 抓到的 4→3→13s 后扩回 5）。
+                format: date-time
+                type: string
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              currentImage:
+                description: CurrentImage 上一次 Reconcile 观察到的镜像，用于检测"镜像刚变更".
+                type: string
+              currentReplicas:
+                description: |-
+                  CurrentReplicas **就绪副本数**，取自 Deployment.status.readyReplicas。
+                  注意：这是观测值，不是 spec.replicas；两者不一致时才说明还在收敛。
+                format: int32
+                type: integer
+              desiredReplicas:
+                description: DesiredReplicas spec 声明的期望副本数，方便与 CurrentReplicas 对比排障.
+                format: int32
+                type: integer
+              lastHealAction:
+                description: LastHealAction 最近一次自愈动作描述.
+                type: string
+              lastHealAt:
+                description: LastHealAt 最近一次自愈动作时间，自愈冷却（观察期）的判断依据.
+                format: date-time
+                type: string
+              lastHealLevel:
+                description: |-
+                  LastHealLevel 最近一次自愈动作的等级（0=L1 扩容, 1=L2 摘除, 2=L3 回滚），
+                  升级路径的判断依据：冷却期内故障再现时升到下一级.
+                type: integer
+              lastImageChangeAt:
+                description: LastImageChangeAt 上一次镜像变更时间，金丝雀观察窗口的起点.
+                format: date-time
+                type: string
+              lastScalingAt:
+                description: LastScalingAt 上一次伸缩动作时间，冷却窗口的判断依据.
+                format: date-time
+                type: string
+              observedGeneration:
+                description: ObservedGeneration 本状态对应的 spec 版本，用于判断状态是否已过期.
+                format: int64
+                type: integer
+              phase:
+                default: Provisioning
+                description: Phase 当前阶段.
+                enum:
+                - Provisioning
+                - Stable
+                - Healing
+                - RollingBack
+                type: string
+              rollbackRevision:
+                description: RollbackRevision 若发生过回滚，记录回滚到的版本.
+                format: int64
+                type: integer
+            required:
+            - phase
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

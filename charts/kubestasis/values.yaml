@@ -1,0 +1,94 @@
+# KubeStasis Helm values
+# 最小可用：helm install kubestasis ./charts/kubestasis -n kubestasis-system --create-namespace
+# 开伸缩：加 --set prometheus.url=http://prometheus.monitoring.svc.cluster.local:9090
+
+image:
+  repository: ghcr.io/weirong-ui/kubestasis
+  # 留空则用 Chart.appVersion；本地 kind/docker-desktop 演示可设 kubestasis:p7
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+# 默认装进 release 的命名空间；想固定到 kubestasis-system 就设它
+namespaceOverride: ""
+
+replicaCount: 1
+# 副本数 >1 时必须为 true，否则多个 manager 会同时抢同一个 App
+leaderElection: true
+
+serviceAccount:
+  create: true
+  # 留空则用 fullname
+  name: ""
+  annotations: {}
+
+rbac:
+  create: true
+
+# 伸缩信号源。留空则伸缩引擎休眠（部署/自愈/webhook 都不受影响）。
+# 指标标签约定：{app="<App 名>", namespace="<App 命名空间>"}，由控制器注入的
+# APP_NAME / POD_NAMESPACE 环境变量保证与 PromQL 对得上。
+prometheus:
+  url: ""
+  window: 5m
+
+# 自愈动作之间的观察期。不要低于 2m：CrashLoop 的"删 Pod→再次 CrashLoop"
+# 探测周期约 1-2 分钟，冷却期短于它会导致"冷却期内复发才升级"永不触发。
+healCooldown: 3m
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+metrics:
+  service:
+    enabled: true
+    port: 8080
+    annotations: {}
+  # 需要集群里已有 Prometheus Operator 的 ServiceMonitor CRD
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    additionalLabels: {}
+
+webhook:
+  # 打开后会创建 webhook Service + Mutating/ValidatingWebhookConfiguration。
+  # 证书两条路：cert-manager，或 chart 内 genSelfSignedCert 现场自签。
+  enabled: false
+  failurePolicy: Fail
+  timeoutSeconds: 10
+
+  certManager:
+    # true 需要集群已装 cert-manager，且下面引用的 issuer 已存在
+    enabled: false
+    issuerRef:
+      name: selfsigned-issuer
+      kind: ClusterIssuer
+      group: cert-manager.io
+
+  # cert-manager 关闭时，自签证书的有效期（天）。升级会重签，
+  # Deployment 上的 checksum 注解会触发滚动重启，避免新旧证书错配。
+  selfSignedCertDays: 3650
+
+  # 跳过这些命名空间的 App 准入校验（kube-system 里通常没有 App，
+  # 但 webhook 的 failurePolicy=Fail 在控制面故障时会放大影响）
+  namespaceSelector:
+    matchExpressions:
+      - key: kubernetes.io/metadata.name
+        operator: NotIn
+        values:
+          - kube-system
+          - kube-public
+          - kube-node-lease

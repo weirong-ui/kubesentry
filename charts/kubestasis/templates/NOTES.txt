@@ -1,0 +1,58 @@
+KubeStasis {{ .Chart.AppVersion }} 已安装到命名空间 {{ include "kubestasis.namespace" . }}。
+
+1) 看控制器是否起来：
+   kubectl -n {{ include "kubestasis.namespace" . }} rollout status deploy/{{ include "kubestasis.fullname" . }}
+   kubectl -n {{ include "kubestasis.namespace" . }} get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+
+2) 建一个受管应用（镜像必须带非 latest tag）：
+
+   cat <<'EOF' | kubectl apply -f -
+   apiVersion: kubestasis.io/v1alpha1
+   kind: App
+   metadata:
+     name: demo
+     namespace: default
+   spec:
+     image: nginx:1.27-alpine
+     port: 80
+     replicas: 1
+     readiness:
+       type: HTTPGet
+       path: /
+   EOF
+
+   kubectl -n default get app demo -w
+
+3) 伸缩是否生效，取决于有没有配指标源：
+{{- if .Values.prometheus.url }}
+   已配置：{{ .Values.prometheus.url }}（window={{ .Values.prometheus.window }}）
+{{- else }}
+   当前**没有**配 prometheus.url，伸缩引擎处于休眠状态（部署/自愈不受影响）。
+   补上：helm upgrade {{ .Release.Name }} {{ .Chart.Name }} -n {{ include "kubestasis.namespace" . }} \
+           --reuse-values --set prometheus.url=http://<prometheus>:9090
+{{- end }}
+
+4) 决策观测（"为什么这次没扩"）：
+
+   kubectl -n {{ include "kubestasis.namespace" . }} port-forward svc/{{ include "kubestasis.fullname" . }}-metrics 8080:{{ .Values.metrics.service.port }}
+   curl -s localhost:8080/metrics | grep kubestasis_scaling
+   # 最近 10 分钟各原因码的决策分布
+   sum by (action, reason) (rate(kubestasis_scaling_decisions_total[10m]))
+
+{{- if .Values.webhook.enabled }}
+
+5) Webhook 已开启：
+{{- if .Values.webhook.certManager.enabled }}
+   证书由 cert-manager 签发（Certificate/{{ include "kubestasis.fullname" . }}-webhook-cert）。
+{{- else }}
+   证书是 chart 用 genSelfSignedCert 现场自签的，**每次 helm upgrade 都会重签**，
+   Deployment 上的 checksum 注解会自动触发滚动重启。
+{{- end }}
+   failurePolicy={{ .Values.webhook.failurePolicy }}：控制器不可用时 App 的创建/更新会被拒绝，
+   演示前先确认 manager Pod 是 Ready。
+{{- end }}
+
+注意：CRD 在 crds/ 下，Helm **只在首次安装时**创建，升级不会更新 schema。
+升级 chart 后请手动执行一次：
+   kubectl apply -f $(helm show crds {{ .Chart.Name }} --repo ... 2>/dev/null || echo charts/{{ .Chart.Name }}/crds)
+   或直接：kubectl apply -f charts/{{ .Chart.Name }}/crds/

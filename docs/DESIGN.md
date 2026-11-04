@@ -1,9 +1,10 @@
 # KubeStasis 设计文档
 
-> 版本：v1.1 ｜ 状态：已实现（P0–P4）｜ 作者：weirong
+> 版本：v1.2 ｜ 状态：已实现（P0–P4 + 探针/稳定窗口/Helm/决策指标）｜ 作者：weirong
 >
 > **同步说明**：v1.0 写于编码之前，P0–P4 落地后有多处与代码不一致。v1.1 按 `api/v1alpha1/app_types.go`
-> 与 `internal/` 的实际实现逐节校对过（2026-11-04）。本文只描述**已经写进代码的行为**，
+> 与 `internal/` 的实际实现逐节校对过（2026-11-04）；v1.2 同步了 11-04 晚新增的四件事
+> （就绪/存活探针、缩容稳定窗口、Helm Chart、伸缩决策指标）。本文只描述**已经写进代码的行为**，
 > 未实现的部分单独标注「计划中」——以 [STATUS.md](STATUS.md) 为能力账本，两者冲突时以 STATUS 为准。
 
 ## 1. 背景与动机
@@ -45,7 +46,12 @@ type AppSpec struct {
     Health    *HealthPolicy     `json:"health,omitempty"`
     Resources *corev1.ResourceRequirements `json:"resources,omitempty"` // 原样透传
     Env       []corev1.EnvVar   `json:"env,omitempty"`       // listType=map，按 name 合并
+    Readiness *ProbeConfig      `json:"readiness,omitempty"` // 省略时注入默认 TCP 探针
+    Liveness  *ProbeConfig      `json:"liveness,omitempty"`  // 只在显式声明时注入
 }
+
+// ProbeConfig: Type HTTPGet|TCPSocket；HTTPGet 需 Path（必须以 "/" 开头，webhook 校验）；
+// period/timeout/initialDelay/failureThreshold 可配，0 取各自默认值
 
 type ScalingPolicy struct {
     MinReplicas             int32          `json:"minReplicas"`
@@ -55,6 +61,7 @@ type ScalingPolicy struct {
     ScaleDownStepPercent    int            `json:"scaleDownStepPercent,omitempty"`    // 默认 20
     HysteresisPercent       int            `json:"hysteresisPercent,omitempty"`       // 默认 10
     ErrorRateScaleUpPercent int            `json:"errorRateScaleUpPercent,omitempty"` // 默认 20
+    ScaleDownStabilizationSeconds int      `json:"scaleDownStabilizationSeconds,omitempty"` // 默认 60，0 关闭
 }
 
 type MetricType string // QPS | P99Latency | ErrorRate       —— 通用业务信号
@@ -89,6 +96,7 @@ type AppStatus struct {
     LastHealAt        *metav1.Time       `json:"lastHealAt,omitempty"`
     CurrentImage      string             `json:"currentImage,omitempty"`
     LastImageChangeAt *metav1.Time       `json:"lastImageChangeAt,omitempty"`
+    BelowTargetSince  *metav1.Time       `json:"belowTargetSince,omitempty"` // 缩容稳定窗口的计时起点
     RollbackRevision  int64              `json:"rollbackRevision,omitempty"`
     Conditions        []metav1.Condition `json:"conditions,omitempty"`
 }
@@ -132,16 +140,27 @@ desiredBy(signal) = ceil(currentReplicas × current / target)
 desired = max(各信号 desired, minReplicas)，且 ≤ maxReplicas
 ```
 
-防震荡三件套：
+防震荡四件套：
 1. **冷却窗口**：`now - lastScalingAt < cooldownSeconds` 时拒绝任何缩容（扩容允许紧急放行）
 2. **迟滞带（只挡缩容）**：缩容方向上 `current - desired ≤ max(1, current × hysteresisPercent%)` 时不动作；
    扩容方向直通，不看迟滞带。**对称迟滞是个坑**：突发时 `desired` 只比当前多 1 个副本，被迟滞带吃掉，
    集群在饱和状态下原地不动（压测 run1 实测：期望 5 实际 4，差 1 ≤ 带 1）。扩容是应急动作，不该被平滑。
 3. **缩容渐进**：缩容每次最多 -scaleDownStepPercent%（默认 20%），扩容可一步到位
+4. **缩容稳定窗口**（11-04 补，压测 run5 的教训）：信号需**持续**低于目标满
+   `scaleDownStabilizationSeconds`（默认 60s）才允许缩容，`status.belowTargetSince` 记计时起点，
+   任一高于目标的采样立即重置。冷却窗口防的是"刚扩完就缩"（时间上贴近上次动作），
+   稳定窗口防的是"信号还没站稳就缩"（时间上贴近信号本身）——两个窗口挡的是不同的病，
+   HPA 的 300s stabilization 只有后者的语义
 
 写路径的时序约束（压测 run4 抓到的竞态）：**先写 status 的 `lastScalingAt`，再写 spec 的 `replicas`**。
 Apply 写 spec 会立刻触发下一轮 Reconcile，而 informer cache 里可能还没有刚写的 status，冷却窗口被绕过，
 表现为 3→2→1 在一个采样窗口内连跳两步。watch 事件按 resourceVersion 有序送达，先写的 status 必然先到 cache。
+
+**决策可观测**（`internal/metrics`）：每轮决策（含 `action=None`）都打点
+`kubestasis_scaling_decisions_total{namespace,app,action,reason}`，另有 desired/current/signal_replicas
+三个 gauge。两个设计约束：reason 必须是**固定枚举** ReasonCode（自由文本会带秒数/副本数，
+每轮一个新 label，时序基数几小时打爆 Prometheus）；App 删除时 `Forget` 清空该 App 的全部时序
+（CounterVec/GaugeVec 不会自回收 label 组合）。"这次为什么没扩"从翻日志变成一条 PromQL。
 
 ### 4.3 自愈引擎（healer 包）
 
@@ -172,7 +191,8 @@ Apply 写 spec 会立刻触发下一轮 Reconcile，而 informer cache 里可能
 - **Validating**（`vapp.kubestasis.io`）：禁 `latest`/无 tag 镜像、`minReplicas ≤ maxReplicas`、
   `replicas` 落在区间内、指标类型不重复且 target 按类型可解析、金丝雀阈值 ∈ (0,1) 且观察窗口 ≥ 30s、
   `resources.requests ≤ limits`、`env` 不得声明保留变量（`APP_NAME`/`POD_NAMESPACE`，由控制器注入）
-  且不得重名。**聚合报错**一次列全，不让用户改一条撞下一条。
+  且不得重名、探针 `HTTPGet.path` 必须以 `/` 开头（TCPSocket 配 path 只警告不阻断——静默忽略的
+  笔误不配拦）。**聚合报错**一次列全，不让用户改一条撞下一条。
 - **不注入安全上下文**（计划中）：`securityContext`（`readOnlyRootFilesystem`/`runAsNonRoot`/drop ALL）
   与 `resources` 的默认值**没有**实现，`resources` 是原样透传、不偷加默认值。写在这里是为了不让人
   误以为已经有一层兜底——目前 Pod 的安全配置由用户自己负责。
@@ -181,7 +201,7 @@ Apply 写 spec 会立刻触发下一轮 Reconcile，而 informer cache 里可能
 
 | 层级 | 工具 | 覆盖内容 | 现状 |
 |---|---|---|---|
-| 单元 | go test + fake client | Scaler 决策表、Healer 状态机、Webhook 校验规则、mini-Informer | ✅ 113 用例 |
+| 单元 | go test + fake client | Scaler 决策表、Healer 状态机、Webhook 校验规则、mini-Informer、指标埋点 | ✅ 137 用例 |
 | 集成 | envtest（真实 apiserver + etcd） | Reconcile 全流程、Finalizer、Status 更新 | ⬜ 计划中——目前靠 kind e2e 顶 |
 | 混沌 | kind 集群脚本（CI） | 杀 Pod / CrashLoop 版本发布 / 金丝雀错误率，验证自愈与回滚 | ✅ 覆盖 P0/P2/P3 |
 
@@ -190,9 +210,12 @@ Apply 写 spec 会立刻触发下一轮 Reconcile，而 informer cache 里可能
 - Operator 自身以 distroless 镜像运行，非 root，只读根文件系统
 - RBAC 最小权限：只列点到点的资源——App CRD + `pods`/`pods/status`/`services`/`events`/
   `deployments`/`replicasets`，无通配符（`*`）、无 `secrets`、无 `nodes`
-- Webhook TLS 证书由 `hack/webhook-certs.sh` 自签（openssl 生成 CA + 带 SAN 的服务端证书，写进
-  Secret 并把 CA 注入 `caBundle`），**不依赖 cert-manager**：目标集群不一定装了它，多一个依赖就多一个
-  装不上的理由。代价是证书轮换要重跑脚本（幂等，会重签并滚动更新），没有 cert-manager 的自动续期
+- Webhook TLS 证书两条路：kustomize 形态用 `hack/webhook-certs.sh` 自签（openssl 生成 CA + 带 SAN 的
+  服务端证书，写进 Secret 并把 CA 注入 `caBundle`）；Helm 形态默认用渲染期 `genSelfSignedCert`（升级
+  自动重签 + checksum 注解触发滚动），也可切 cert-manager。**不强制依赖 cert-manager**：目标集群
+  不一定装了它，多一个依赖就多一个装不上的理由。代价是自签证书轮换要重跑脚本或重新 upgrade，
+  没有 cert-manager 的自动续期
+- 部署双轨：`config/`（kustomize，开发与 CI）与 `charts/kubestasis`（Helm，交付形态）装的是同一个控制器
 - Defaulting Webhook 为受管应用注入安全上下文（集群级"兜底防线"）——**计划中，未实现**；当前不注入任何
   `securityContext`，Operator 自身的安全配置（distroless、非 root、只读根文件系统）在 Deployment 里是硬编码的
 - 镜像供应链：CI 用 cosign keyless 签名并自验，示例策略见 `policies/kyverno-kubestasis.yaml`（验签后才准入）
@@ -206,4 +229,4 @@ Apply 写 spec 会立刻触发下一轮 Reconcile，而 informer cache 里可能
 | 指标 | Prometheus HTTP API | 生态最广，查询简单 |
 | 测试 | go test + kind e2e | 单测跑决策表，控制循环回归放真集群（envtest 计划中） |
 | CI | GitHub Actions | gofmt + vet + build + test / kind e2e / 多架构镜像 + cosign 签名 |
-| 部署 | kustomize（Helm Chart 计划中） | 现在只有 kustomize overlay：默认版 + webhook 版 |
+| 部署 | kustomize + Helm Chart 双轨 | 开发/CI 用 kustomize overlay，交付用 `charts/kubestasis`（crds/ 仅首装创建） |

@@ -86,6 +86,18 @@ kubectl get events --field-selector reason=KubeStasisScaleUp
 不带 Webhook 用 `make deploy`；Windows 无 `make` 时用等价命令：`kubectl kustomize config/webhook-enabled | sed 's|IMG_PLACEHOLDER|kubestasis:dev|g' | kubectl apply -f -`。
 伸缩需要 `--prometheus-url` 指向可用的 Prometheus（不配则伸缩休眠，其余功能不受影响）。
 
+### 用 Helm 装（生产形态）
+
+```bash
+helm upgrade --install kubestasis charts/kubestasis -n kubestasis-system --create-namespace \
+  --set image.repository=ghcr.io/weirong-ui/kubestasis --set image.tag=latest \
+  --set prometheus.url=http://prometheus.monitoring:9090 \
+  --set webhook.enabled=true
+```
+
+webhook 证书默认用渲染期自签（零外部依赖），也可切 cert-manager；完整 values 说明与 kustomize→Helm 迁移注意见 [charts/kubestasis/README.md](charts/kubestasis/README.md)。
+伸缩决策自带 Prometheus 指标（`kubestasis_scaling_decisions_total` 等，查询示例见 `deploy/monitoring/recording-rules.yaml`），manager 的 metrics Service 开在 8080。
+
 ## 设计权衡
 
 这一节记录**为什么这样做、放弃了什么**——代码能看出"做了什么"，看不出"为什么不是另一种做法"。
@@ -143,7 +155,9 @@ go test ./... -cover     # 单元测试（113 用例）
 - [x] P3 Admission Webhook + cosign 签名 + Kyverno 策略
 - [x] P4 手写 mini-Informer（[设计笔记](pkg/miniinformer/README.md)）
 - [x] 压测对比 vs 原生 HPA（[报告](docs/benchmark/hpa-vs-kubestasis.md)）
-- [ ] **未完成**：Helm Chart（现在只有 kustomize）、envtest（现在只有 fake client 单测 + kind e2e）、决策过程 Prometheus 指标与 Grafana 面板
+- [x] Helm Chart（`helm upgrade --install` 真集群验证，含自签/cert-manager 双证书方案）
+- [x] 伸缩决策指标（`kubestasis_scaling_*` 四个指标 + recording rules）
+- [ ] **未完成**：envtest（现在只有 fake client 单测 + kind e2e）、Grafana 面板入库
 - 远景、不承诺排期：eBPF 采集、多集群
 
 详细的逐条状态、已知坑、不解决的问题：[docs/STATUS.md](docs/STATUS.md)。

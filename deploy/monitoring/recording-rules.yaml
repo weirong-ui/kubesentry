@@ -1,0 +1,65 @@
+# 伸缩决策的可观测性：指标、查询与告警
+#
+# 解决的问题："这次为什么没扩/没缩？"
+#   - Events 只在**有动作**时留痕，None 的决策什么都不留
+#   - 日志按时间翻，无法按原因聚合
+# 有了 decisions_total{reason}，它就是一次查询。
+#
+# 用法：kubectl apply -f deploy/monitoring/recording-rules.yaml
+# 前提：集群里有 Prometheus Operator（PrometheusRule CRD）；没有的话把 spec.groups
+#       里的规则抄进 prometheus.yml 的 rule_files 即可。
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: kubestasis
+  labels:
+    app.kubernetes.io/name: kubestasis
+spec:
+  groups:
+    - name: kubestasis.scaling
+      interval: 30s
+      rules:
+        # 决策速率：按动作+原因码切分。None 占绝大多数说明集群很稳；
+        # None 里 reason=stabilizing/cooldown 高，说明窗口在按设计挡缩容。
+        - record: kubestasis:scaling_decisions:rate5m
+          expr: |
+            sum by (namespace, app, action, reason) (
+              rate(kubestasis_scaling_decisions_total[5m])
+            )
+
+        # 被挡住的缩容占全部决策的比例：持续接近 1 说明"信号一直说该缩，
+        # 但一直被窗口按住"——要么窗口配太长，要么信号目标配错了。
+        - record: kubestasis:scale_down_blocked:ratio5m
+          expr: |
+            sum by (namespace, app) (
+              rate(kubestasis_scaling_decisions_total{action="None",reason=~"stabilizing|cooldown|hysteresis"}[5m])
+            )
+            /
+            clamp_min(
+              sum by (namespace, app) (rate(kubestasis_scaling_decisions_total[5m])),
+              0.0001
+            )
+
+        # 信号算出的副本数与当前副本数的缺口：>0 表示"想扩但没扩"，
+        # 结合上一条能区分是窗口挡住还是 maxReplicas 顶住了。
+        - record: kubestasis:scaling_replica_gap
+          expr: |
+            kubestasis_scaling_desired_replicas
+            - kubestasis_scaling_current_replicas
+
+      alerts:
+        # 最容易被忽略的配置错误：以为在伸缩，其实没接指标源。
+        # 控制器每 15s 一轮，10 分钟 = 40 轮全是 no_metrics_source，基本可以确诊。
+        - alert: KubeStasisScalingDormant
+          expr: |
+            sum by (namespace, app) (
+              increase(kubestasis_scaling_decisions_total{reason="no_metrics_source"}[10m])
+            ) > 10
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "App {{ $labels.app }} 的伸缩引擎处于休眠（未配置指标源）"
+            description: >-
+              manager 的 --prometheus-url 为空或 Prometheus 查询失败，
+              所有决策都返回 no_metrics_source。部署与自愈不受影响，但不会伸缩。

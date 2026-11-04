@@ -1,0 +1,47 @@
+{{- if .Values.metrics.service.enabled }}
+# 指标端点：kubestasis_scaling_decisions_total / desired_replicas / signal_replicas
+# 以及 controller-runtime 自带的 workqueue/reconcile 指标。
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kubestasis.fullname" . }}-metrics
+  namespace: {{ include "kubestasis.namespace" . }}
+  labels:
+    {{- include "kubestasis.labels" . | nindent 4 }}
+    control-plane: controller-manager
+  {{- with .Values.metrics.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "kubestasis.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ .Values.metrics.service.port }}
+      targetPort: metrics
+      protocol: TCP
+{{- end }}
+{{- if .Values.metrics.serviceMonitor.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "kubestasis.fullname" . }}
+  namespace: {{ include "kubestasis.namespace" . }}
+  labels:
+    {{- include "kubestasis.labels" . | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "kubestasis.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+      path: /metrics
+{{- end }}
