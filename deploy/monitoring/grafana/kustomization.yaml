@@ -1,0 +1,12 @@
+# Grafana sidecar 自动发现约定（kube-prometheus-stack）：
+# 打上 grafana_dashboard: "1" 的 ConfigMap 会被 sidecar 挂进 Grafana。
+# 用法：kubectl apply -k deploy/monitoring/grafana/ -n <grafana 所在命名空间>
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+configMapGenerator:
+  - name: grafana-dashboard-kubestasis
+    files:
+      - kubestasis-dashboard.json
+    options:
+      labels:
+        grafana_dashboard: "1"

@@ -62,6 +62,7 @@
 | Helm Chart | ✅ 已实现 | `charts/kubestasis`（0.1.0）：CRD 放 `crds/`、SA/RBAC/Deployment/metrics Service/webhook 全模板化；webhook 证书二选一——默认 `helm genSelfSignedCert` 渲染期生成（零外部依赖），或 `--set webhook.certManager.enabled=true` 走 cert-manager；`helm lint` + `template` + server-side dry-run + 真集群 `upgrade --install`（p9 镜像）+ 滚动升级全部验证。注意事项与 values 说明见 [charts/kubestasis/README.md](../charts/kubestasis/README.md) |
 | 单元测试 | ✅ 137 用例 | scaler 59 + controller 16 + healer 24 + webhook 24 + miniinformer 11 + metrics 3（用 `--- PASS` 行数按包实测，和 §二 同一口径） |
 | envtest 集成测试 | ✅ 4 条链路 | `test/envtest/`：进程内起真实 etcd + apiserver，验 watch → enqueue → Reconcile → status 回写 的闭环——创建（Deployment/Service/ownerRef/finalizer/DesiredReplicas）、就绪回写（代写 Deployment.status → App Available=True）、删除放闸、副本漂移拉回。CI 有独立 `envtest` job；本地无二进制时自动 Skip（`KUBESTASIS_REQUIRE_ENVTEST=1` 强制失败） |
+| Grafana 面板 | ✅ 已实现 | `deploy/monitoring/grafana/`：4 行 16 格（概览 → 决策 → 信号与窗口 → 控制器健康/运行时），变量按 App 命名空间/App 过滤；`kustomization.yaml` 打成带 `grafana_dashboard: "1"` 的 ConfigMap 供 sidecar 自动发现。**真集群验证**：kind + 真 Prometheus 抓控制器 metrics，跑出一次完整的 2→1（稳定窗口挡了 5 轮 stabilizing）→2；截图 [docs/assets/grafana-dashboard.png](assets/grafana-dashboard.png)，读图指南见 [deploy/monitoring/README.md](../deploy/monitoring/README.md) |
 | 压测与 HPA 对比表 | ✅ 已完成 | 2026-11-04：同镜像/同资源/同流量下 vs 原生 HPA（CPU 50%）的对照实验，5 秒粒度采样入库 `docs/benchmark/data.csv`，报告见 [docs/benchmark/hpa-vs-kubestasis.md](benchmark/hpa-vs-kubestasis.md)。结论有限定条件，报告里写清了口径与失效风险 |
 
 ## 四、11.02 夜这一轮改了什么（P0 收尾）
@@ -154,6 +155,7 @@
 | 2026-11-04 | 对照压测（HPA vs KubeStasis）+ CRD resources/env 透传 + webhook 校验配套 | 五轮压测，前四轮全部被自己推翻（详见压测报告）；修复渐进缩容跨步竞态（status 先于 spec 写入）；报告与原始 CSV 入库；103 → 113 用例 |
 | 2026-11-04 晚 | 就绪/存活探针 + 缩容稳定窗口 + Helm Chart + 决策指标导出 | 113 → 137 用例；`Available` 语义修正（有真探针了）；run5 误缩容缺口闭合；`helm upgrade --install` 真集群验证（含滚动升级 p8→p9）；踩到"kustomize 与 Helm 双装导致两套 webhook 打架"的坑（见下） |
 | 2026-11-04 深夜 | envtest 控制循环回归落地（原计划第 3 周，提前完成） | 新增 `test/envtest/` 4 条链路 + CI 独立 `envtest` job（5 → 6 job）；P0 最后一个未勾项清零 |
+| 2026-11-04 深夜 | Grafana 面板 + 录制规则两处真 bug 修复 | 面板 4 行 16 格真集群截出入库；修 `alerts:` 写在 rules 数组外（PrometheusRule schema 会静默剪掉，告警从未生效）、比例规则无序列时显示 No data（改零填充）；chart ServiceMonitor 补 `honorLabels: true`（否则决策指标的 App 命名空间被目标标签覆盖，面板按 App 过滤全空） |
 
 ### 11.03 晚新踩的坑（已修，写进记忆）
 

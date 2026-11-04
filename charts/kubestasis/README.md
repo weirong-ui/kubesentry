@@ -41,6 +41,11 @@ kubectl -n kubestasis-system port-forward svc/kubestasis-kubestasis-metrics 8080
 curl -s localhost:8080/metrics | grep kubestasis_scaling
 ```
 
+接 Prometheus Operator 时开 `--set metrics.serviceMonitor.enabled=true`。生成的
+ServiceMonitor 带 `honorLabels: true`：决策指标的 `namespace` 是**被伸缩 App 的命名空间**
+（业务语义），不开它会被目标标签（控制器 Pod 所在 ns）覆盖、原值改名 `exported_namespace`，
+按 App 过滤的面板和录制规则就全空了。现成面板见 [deploy/monitoring/grafana](../../deploy/monitoring/README.md)。
+
 ## 升级与 CRD
 
 `crds/` 下的 CRD **只在首次安装时创建**，`helm upgrade` 不会更新 schema

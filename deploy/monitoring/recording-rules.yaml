@@ -29,10 +29,18 @@ spec:
 
         # 被挡住的缩容占全部决策的比例：持续接近 1 说明"信号一直说该缩，
         # 但一直被窗口按住"——要么窗口配太长，要么信号目标配错了。
+        #
+        # `or 0 * <分母>` 是零填充：一天里没有任何被挡决策时分子是空集，
+        # 除法得不到序列，面板就显示 "No data"（看着像坏了）。
+        # 用同 label 的 0 兜底，面板才是一条贴底的 0% 线。
         - record: kubestasis:scale_down_blocked:ratio5m
           expr: |
-            sum by (namespace, app) (
-              rate(kubestasis_scaling_decisions_total{action="None",reason=~"stabilizing|cooldown|hysteresis"}[5m])
+            (
+              sum by (namespace, app) (
+                rate(kubestasis_scaling_decisions_total{action="None",reason=~"stabilizing|cooldown|hysteresis"}[5m])
+              )
+              or
+              0 * sum by (namespace, app) (rate(kubestasis_scaling_decisions_total[5m]))
             )
             /
             clamp_min(
@@ -47,9 +55,10 @@ spec:
             kubestasis_scaling_desired_replicas
             - kubestasis_scaling_current_replicas
 
-      alerts:
         # 最容易被忽略的配置错误：以为在伸缩，其实没接指标源。
         # 控制器每 15s 一轮，10 分钟 = 40 轮全是 no_metrics_source，基本可以确诊。
+        # 注意：alert 必须和 record 同在 rules 数组里——PrometheusRule 的 group
+        # 没有 alerts 字段，单独写会被 schema 静默剪掉（pruning），永远加载不上。
         - alert: KubeStasisScalingDormant
           expr: |
             sum by (namespace, app) (

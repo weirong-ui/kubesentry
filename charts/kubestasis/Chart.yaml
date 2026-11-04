@@ -2,7 +2,7 @@ apiVersion: v2
 name: kubestasis
 description: 多信号弹性伸缩 + 分级自愈 + 准入控制的 Kubernetes Operator
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: "0.1.0"
 keywords:
   - kubernetes

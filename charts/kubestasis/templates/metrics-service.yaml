@@ -44,4 +44,8 @@ spec:
       interval: {{ .Values.metrics.serviceMonitor.interval }}
       scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
       path: /metrics
+      # 决策指标的 namespace label 是 App 的命名空间（业务语义），
+      # 不开 honorLabels 会被 Prometheus 的目标标签（控制器 Pod 所在 ns）覆盖、
+      # 原值被改名 exported_namespace，面板按 App 命名空间过滤就全空了
+      honorLabels: true
 {{- end }}

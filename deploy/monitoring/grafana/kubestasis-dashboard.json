@@ -1,0 +1,586 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "type": "row",
+      "title": "伸缩概览",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "受管 App 数",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 4, "x": 0, "y": 1 },
+      "id": 1,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count(count by (namespace, app) (kubestasis_scaling_desired_replicas{namespace=~\"$namespace\", app=~\"$app\"}))",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "blue", "value": null } ] } },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "期望副本总数",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 4, "x": 4, "y": 1 },
+      "id": 2,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(kubestasis_scaling_desired_replicas{namespace=~\"$namespace\", app=~\"$app\"})",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] } },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "伸缩动作速率（次/分）",
+      "description": "action != None 的决策速率。长期为 0 要么集群很稳，要么没接指标源（看 None 原因分布里的 no_metrics_source）。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 4, "x": 8, "y": 1 },
+      "id": 3,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "60 * sum(rate(kubestasis_scaling_decisions_total{namespace=~\"$namespace\", app=~\"$app\", action!=\"None\"}[5m]))",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "decimals": 2, "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "orange", "value": null } ] } },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "缩容被挡比例（均值）",
+      "description": "信号说该缩、但被稳定窗口/冷却/迟滞按住的决策占比。持续接近 100%：窗口配太长，或信号目标配错了。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 4, "x": 12, "y": 1 },
+      "id": 4,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "avg(kubestasis:scale_down_blocked:ratio5m{namespace=~\"$namespace\", app=~\"$app\"})",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "max": 1,
+          "min": 0,
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 0.5 }, { "color": "red", "value": 0.9 } ] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "最大副本缺口",
+      "description": "desired - current 的最大值。>0 表示\"想扩但没扩\"：结合 None 原因分布看是窗口挡住还是 maxReplicas 顶住。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 4, "x": 16, "y": 1 },
+      "id": 5,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(kubestasis:scaling_replica_gap{namespace=~\"$namespace\", app=~\"$app\"})",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 1 }, { "color": "red", "value": 3 } ] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "活跃告警",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 4, "x": 20, "y": 1 },
+      "id": 6,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count(ALERTS{alertname=~\"KubeStasis.*\", alertstate=\"firing\"}) or vector(0)",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "伸缩决策",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 },
+      "id": 101,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "决策速率（按动作）",
+      "description": "ScaleUp/ScaleDown 是真实伸缩；None 是\"评估过但没动\"。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 9, "w": 8, "x": 0, "y": 7 },
+      "id": 7,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (action) (rate(kubestasis_scaling_decisions_total{namespace=~\"$namespace\", app=~\"$app\"}[5m]))",
+          "legendFormat": "{{action}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 15, "stacking": { "mode": "normal" }, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "None 决策原因分布",
+      "description": "回答\"为什么没动\"：no_metrics_source=没接指标源；stabilizing=稳定窗口；cooldown=冷却；hysteresis=迟滞带；within_bounds=已在边界（min/max 顶住）；no_policy=没配 scaling。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 9, "w": 8, "x": 8, "y": 7 },
+      "id": 8,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (reason) (rate(kubestasis_scaling_decisions_total{namespace=~\"$namespace\", app=~\"$app\", action=\"None\"}[5m]))",
+          "legendFormat": "{{reason}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 15, "stacking": { "mode": "normal" }, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "期望副本 vs 当前副本",
+      "description": "两线分叉处就是\"决策想动、但被窗口/边界按住\"的时刻，分叉方向决定是扩是缩。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 9, "w": 8, "x": 16, "y": 7 },
+      "id": 9,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "kubestasis_scaling_desired_replicas{namespace=~\"$namespace\", app=~\"$app\"}",
+          "legendFormat": "{{app}} 期望"
+        },
+        {
+          "refId": "B",
+          "expr": "kubestasis_scaling_current_replicas{namespace=~\"$namespace\", app=~\"$app\"}",
+          "legendFormat": "{{app}} 当前"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never", "spanNulls": false, "lineInterpolation": "stepAfter" }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } }
+    },
+    {
+      "type": "row",
+      "title": "信号与窗口",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 },
+      "id": 102,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "各信号独立算出的期望副本",
+      "description": "最终决策取各信号的最大值——哪条线最高，就是哪个信号在推动伸缩。QPS/P99/错误率/QueueDepth/TTFT/KVCacheUsage。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 17 },
+      "id": 10,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "kubestasis_scaling_signal_replicas{namespace=~\"$namespace\", app=~\"$app\"}",
+          "legendFormat": "{{app}} / {{signal}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never", "spanNulls": false, "lineInterpolation": "stepAfter" }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "none" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "缩容被挡比例（按 App）",
+      "description": "recording rule：kubestasis:scale_down_blocked:ratio5m。持续高位 = 窗口太长或信号目标过低。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 9, "w": 6, "x": 12, "y": 17 },
+      "id": 11,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "kubestasis:scale_down_blocked:ratio5m{namespace=~\"$namespace\", app=~\"$app\"}",
+          "legendFormat": "{{app}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "max": 1,
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 20, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "副本缺口（desired - current）",
+      "description": "recording rule：kubestasis:scaling_replica_gap。正值=想扩被按住；负值=想缩被按住。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 9, "w": 6, "x": 18, "y": 17 },
+      "id": 12,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "kubestasis:scaling_replica_gap{namespace=~\"$namespace\", app=~\"$app\"}",
+          "legendFormat": "{{app}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } }
+    },
+    {
+      "type": "row",
+      "title": "控制器健康",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 26 },
+      "id": 103,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Reconcile 速率与错误",
+      "description": "errors 持续 >0 说明 Reconcile 在反复失败退避，查 controller 日志的 ERROR 行。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 27 },
+      "id": 13,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(controller_runtime_reconcile_total{namespace=~\"$ctrl_ns\", controller=\"app\"}[5m]))",
+          "legendFormat": "reconcile"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(controller_runtime_reconcile_errors_total{namespace=~\"$ctrl_ns\", controller=\"app\"}[5m]))",
+          "legendFormat": "errors"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "errors" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Reconcile 时延分位",
+      "description": "p99 持续升高：Prometheus 查询变慢或 apiserver 写冲突增多。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 27 },
+      "id": 14,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{namespace=~\"$ctrl_ns\", controller=\"app\"}[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{namespace=~\"$ctrl_ns\", controller=\"app\"}[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{namespace=~\"$ctrl_ns\", controller=\"app\"}[5m])))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "WorkQueue 深度",
+      "description": "持续不为 0：Reconcile 处理速度跟不上事件产生速度（或某个 key 在反复失败）。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 27 },
+      "id": 15,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "workqueue_depth{namespace=~\"$ctrl_ns\", name=\"app\"}",
+          "legendFormat": "depth"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(workqueue_retries_total{namespace=~\"$ctrl_ns\", name=\"app\"}[5m]))",
+          "legendFormat": "重试速率"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } }
+    },
+    {
+      "type": "row",
+      "title": "运行时",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 35 },
+      "id": 104,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "内存 / 协程",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
+      "id": 16,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "process_resident_memory_bytes{namespace=~\"$ctrl_ns\"}",
+          "legendFormat": "RSS {{pod}}"
+        },
+        {
+          "refId": "B",
+          "expr": "go_goroutines{namespace=~\"$ctrl_ns\"}",
+          "legendFormat": "goroutines {{pod}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": [
+          { "matcher": { "id": "byRegexp", "options": "RSS .*" }, "properties": [ { "id": "unit", "value": "bytes" } ] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "apiserver 请求（按动词/结果码）",
+      "description": "5xx 持续出现：apiserver 压力或 RBAC/配额问题。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
+      "id": 17,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (verb, code) (rate(rest_client_requests_total{namespace=~\"$ctrl_ns\"}[5m]))",
+          "legendFormat": "{{verb}} {{code}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } }
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["kubestasis", "kubernetes", "autoscaling", "operator"],
+  "templating": {
+    "list": [
+      {
+        "type": "datasource",
+        "name": "datasource",
+        "label": "Prometheus",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "refresh": 1,
+        "regex": "",
+        "options": []
+      },
+      {
+        "type": "query",
+        "name": "namespace",
+        "label": "App 命名空间",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": { "query": "label_values(kubestasis_scaling_decisions_total, namespace)", "refId": "namespace" },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {},
+        "hide": 0,
+        "sort": 1,
+        "options": []
+      },
+      {
+        "type": "query",
+        "name": "app",
+        "label": "App",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": { "query": "label_values(kubestasis_scaling_decisions_total{namespace=~\"$namespace\"}, app)", "refId": "app" },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {},
+        "hide": 0,
+        "sort": 1,
+        "options": []
+      },
+      {
+        "type": "custom",
+        "name": "ctrl_ns",
+        "label": "控制器命名空间（正则）",
+        "query": "kubestasis.*",
+        "current": { "selected": true, "text": "kubestasis.*", "value": "kubestasis.*" },
+        "options": [ { "selected": true, "text": "kubestasis.*", "value": "kubestasis.*" } ],
+        "hide": 2,
+        "multi": false,
+        "includeAll": false
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "KubeStasis · 伸缩决策与控制器健康",
+  "uid": "kubestasis-overview",
+  "version": 1,
+  "weekStart": ""
+}

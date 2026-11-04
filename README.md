@@ -16,9 +16,10 @@
 | 按 QPS 伸缩 | [500 QPS 打流 → 1→5 副本；停流后渐进缩回 1](docs/demo/01-scaling.md)（集群内真 Prometheus 按 Pod 抓取） |
 | 分级自愈 | [crash 版本发布 → L2 摘除 → L3 按 ReplicaSet 回滚](docs/demo/02-self-healing.md)（CI 里有同链路回归断言） |
 | vs 原生 HPA | [同镜像、同资源、同流量时间线的压测对比](docs/benchmark/hpa-vs-kubestasis.md)（扩容响应 23s vs 40s；输的两项也写在里面；原始 CSV 可复算） |
+| 可观测性 | [Grafana 面板实测截图](deploy/monitoring/README.md)——4 行 16 个面板，含一次真实的 2→1→2（稳定窗口挡缩容、到点缩、再扩）；同目录还有录制规则与"伸缩引擎休眠"告警 |
 | 全部能力/限制/踩坑 | [docs/STATUS.md](docs/STATUS.md)（唯一可信账本，含"已知不解决的问题"） |
 
-CI 四道门：`docs`（链接有效性）/ `build`（gofmt + vet + 113 用例）/ `e2e`（kind 真集群跑通伸缩、自愈、Webhook 负向用例）/ `image`（多架构 + cosign 签名）。
+CI 六道门：`docs`（链接有效性）/ `build`（gofmt + vet + 137 用例）/ `envtest`（真实 apiserver 的控制循环回归，4 条链路）/ `chart`（helm lint + 双形态渲染 + CRD 逐字节 diff）/ `e2e`（kind 真集群跑通伸缩、自愈、Webhook 负向用例）/ `image`（多架构 + cosign 签名）。
 
 ## 它长什么样
 
@@ -70,6 +71,17 @@ HPA 用 CPU 50%（全默认行为），KubeStasis 用 QPS 16/Pod（默认迟滞 
 这张表只挑了能说明问题的四行，完整的（含输掉的那几项：突发#2 起点的一次误缩容、失败请求 99 vs 33、五轮废数据的归档）在报告里。
 
 口径、原始 CSV、复现脚本：[docs/benchmark/hpa-vs-kubestasis.md](docs/benchmark/hpa-vs-kubestasis.md)
+
+## 观测面板
+
+决策过程不是黑盒：每次评估（包括"评估了但没动"）都打点，配合录制规则与 Grafana 面板可以直接回答
+
+> 刚才为什么没缩？是稳定窗口在挡，还是信号本来就没掉？
+
+![KubeStasis Grafana 面板](docs/assets/grafana-dashboard.png)
+
+上图的 2→1→2 是真实一次：停流后信号掉下来，稳定窗口连挡 5 轮（`stabilizing` 决策），窗口走满才缩到 1；重新打流后按冷却窗口扩回 2。
+面板、录制规则、导入方式见 [deploy/monitoring/](deploy/monitoring/README.md)。
 
 ## 快速开始
 
