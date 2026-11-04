@@ -1,18 +1,18 @@
 # KubeStasis 实现状态（真实账本）
 
 > 本文件是**唯一可信的能力清单**。README 的一切对外描述以此为准，每完成一项就把状态改掉。
-> 最后更新：2026-11-03 晚（P3 Admission Webhook 落地 + 评审意见修复：冲突写路径、魔法数字可配、CI 覆盖 P2）
+> 最后更新：2026-11-04（补 vs 原生 HPA 压测对比、App 支持 resources/env、CRD group 更名 kubestasis.io）
 > 验收口径：代码能在干净集群上 `deploy → apply App → Available`，且有可复现的证据。
-> ⚠️ 项目原名 KubeSentry，2026-11-03 更名 KubeStasis（避免与既有项目重名）；CRD group `apps.sentry.io` 保持不变。
+> ⚠️ 项目原名 KubeSentry，2026-11-03 更名 KubeStasis；CRD group 于 2026-11-04 由 `kubestasis.io` 改为 `kubestasis.io`（不再沿用第三方商标）。
 
 ## 一、当前结论
 
-**P0/P1/P2/P3 已闭环**：`apply CR → Deployment + Service → Available` 之外，三条"智能"链路都在真集群上跑通了——
+**P0–P4 全部闭环，并补上了唯一缺的量化证据（vs 原生 HPA 压测）**：`apply CR → Deployment + Service → Available` 之外，三条"智能"链路都在真集群上跑通了——
 **弹性伸缩**（真实 Prometheus 按 Pod 抓取 + 500 QPS 打流 → 扩容 1→5 → 停流渐进缩回 1，见 [docs/demo/01-scaling.md](demo/01-scaling.md)）、
 **分级自愈**（CrashLoop 版本发布 → L2 摘除 → 冷却期内复发自动升级 L3 回滚 → 恢复；金丝雀窗口内错误率超阈值 → 20 秒内自动回滚，见 [docs/demo/02-self-healing.md](demo/02-self-healing.md)）、
 **准入控制**（Mutating 默认值注入 + Validating 准入校验，自签证书方案不依赖 cert-manager，`make deploy-webhook` 一键起）。
 **P2 自愈链路已进入 CI e2e**（kind 集群里真跑 crash 镜像 → 自动回滚断言），自愈能力不再依赖人工实测。
-尚未实现的是 P4（mini-Informer）。
+**伸缩对比**：同镜像、同资源、同流量时间线下与原生 HPA 的对照实验，见 [docs/benchmark/hpa-vs-kubestasis.md](benchmark/hpa-vs-kubestasis.md)（原始采样 CSV 入库，可复算）。
 
 ## 二、体检与验证结果（2026-11-02 实测，11-03 晚更新）
 
@@ -35,7 +35,7 @@
 
 | 能力 | 真实状态 | 证据与缺口 |
 |---|---|---|
-| App CRD + 代码生成 | ✅ 已实现 | `config/crd/bases/apps.sentry.io_apps.yaml` 由 controller-gen v0.16.5 生成；`zz_generated.deepcopy.go` 已入库 |
+| App CRD + 代码生成 | ✅ 已实现 | `config/crd/bases/kubestasis.io_apps.yaml` 由 controller-gen v0.16.5 生成；`zz_generated.deepcopy.go` 已入库 |
 | Reconcile（App → Deployment） | ✅ 已实现 | `ensureDeployment` 幂等 CreateOrUpdate + `SetControllerReference`；集群验证 2/2 就绪 |
 | Service 自动创建 | ✅ 已实现 | `ensureService`（ClusterIP，port/targetPort 同源）；Endpoints 有 2 个后端 IP |
 | 托管资源标签 | ✅ 已实现 | Deployment/Service 均带 `app.kubernetes.io/managed-by=kubestasis`，README 的 `-l` 查询可直接用 |
@@ -55,9 +55,9 @@
 | Admission Webhook | ✅ 已实现 | `internal/webhook/`：Mutating（replicas 跟随 minReplicas 的跨字段默认）+ Validating（禁 latest/无 tag 镜像、min≤max、replicas 落区间、指标 target 按类型可解析、同类型不重复、金丝雀阈值与窗口下限；聚合报错一次列全）。`make deploy-webhook`：overlay + `hack/webhook-certs.sh` 自签证书 + caBundle 注入，不依赖 cert-manager。**CI e2e 负向用例**：`:latest` 被拒、默认值注入生效 |
 | mini-Informer | ✅ 已实现 | `pkg/miniinformer/`：手写 ListWatch → DeltaFIFO（按键压缩去重）→ Store → Handler + 控制器侧 WorkQueue（幂等+不漏），泛型实现约 400 行，11 个用例含断线重列；与 client-go 的取舍差异逐条写在包注释与 [README](../pkg/miniinformer/README.md) |
 | 镜像签名与准入策略 | ✅ 已实现 | CI image job 用 cosign keyless 签 GHCR digest（GitHub OIDC → Fulcio → Rekor）并签完自验；`policies/kyverno-kubestasis.yaml`：禁 latest/无 tag + kubestasis-system 强制验签。CKS 考点变成可展示证据 |
-| Helm Chart | 🗓 规划中 | `charts/` 不存在，第 3 周在 kustomize 之后再做 |
-| 单元测试 | ✅ 103 用例 | scaler 37 + controller 8 + healer 33 + webhook 14 + miniinformer 11。envtest 待第 3 周 |
-| 压测与 HPA 对比表 | 🗓 规划中 | 第 3 周——这是证明"迟滞算法优于原生 HPA"的唯一硬证据，优先级最高 |
+| Helm Chart | 🗓 规划中 | `charts/` 不存在，当前安装形态只有 kustomize。**未完成就是未完成**，README 不把它写成能力 |
+| 单元测试 | ✅ 113 用例 | scaler 39 + controller 10 + healer 33 + webhook 17 + miniinformer 11（新增：resources/env 透传与保留变量过滤、webhook 对 requests>limits 的拦截）。envtest 仍未做——现在的控制循环回归靠 kind e2e |
+| 压测与 HPA 对比表 | ✅ 已完成 | 2026-11-04：同镜像/同资源/同流量下 vs 原生 HPA（CPU 50%）的对照实验，5 秒粒度采样入库 `docs/benchmark/data.csv`，报告见 [docs/benchmark/hpa-vs-kubestasis.md](benchmark/hpa-vs-kubestasis.md)。结论有限定条件，报告里写清了口径与失效风险 |
 
 ## 四、11.02 夜这一轮改了什么（P0 收尾）
 
@@ -108,16 +108,36 @@
 | 同 tag 重新构建后集群仍跑旧镜像 | 换 tag（`e2e2`/`e2e3`）或 `imagePullPolicy: Always`；containerd 会缓存同名 tag |
 | Docker Desktop 集群拉 `nginx:1.27-alpine` 报 registry-mirror 500 | 先在本机 `docker pull` 预热镜像，再让集群重试 |
 
-## 七、下一步（11.05 起）
+## 七、已知不解决的问题（主动画边界）
 
-1. ~~P1 指标源~~ / ~~P2 自愈~~ / ~~P3 Webhook~~ / ~~P4 mini-Informer~~：**全部完成**（2026-11-03）
-2. **第 3 周硬骨头**（按优先级）：
-   - **压测对比表**：KubeStasis 迟滞算法 vs 原生 HPA，同一负载曲线下的副本震荡次数/响应时间——"优于 HPA"目前只有定性论证，缺量化证据
-   - envtest 集成测试（控制循环级回归）
+这一节存在的原因：一份只列"能做什么"的清单，读者没法判断可信度。下面这些是**明确知道、短期不打算解决**的问题——不是遗漏，是取舍。
+
+| 问题 | 为什么现在不解决 | 真要解决需要什么 |
+|---|---|---|
+| **有状态应用的存储编排**（PD 分离、主从选举、PVC 生命周期） | KubeStasis 管的是无状态工作负载；有状态编排是另一套知识体系（StatefulSet 语义、卷拓扑、数据迁移），硬塞进来会让主链路不扎实 | 单独设计 StatefulApp CRD；或直接集成 Operator 生态里成熟的方案（如 TiDB Operator、CloudNativePG） |
+| **多集群 / 跨集群联邦** | 涉及跨集群服务发现、状态同步、冲突消解，是独立课题；单集群链路还没被真实流量打磨过 | 至少要先有 metrics 聚合层与全局调度器；基于 Karmada/ClusterAPI 做上层编排比自研更现实 |
+| **无侵入指标采集（eBPF）** | 需要内核态开发、节点特权与版本兼容矩阵；收益是省掉应用埋点，但本项目假定应用暴露 Prometheus 指标 | 用 Pixie/eBPF exporter 作为 MetricsSource 的另一种实现即可，不必自研 |
+| **真正的流量切分式金丝雀**（按权重引流） | 现在做的是"发布后观察错误率，超阈值回滚"——观察真实流量，不做权重控制。名字叫 canary，但不是流量治理 | 引入 Gateway API / Istio 的权重路由；Webhook 侧还要管 VirtualService 生命周期 |
+| **控制面高可用** | 单副本 manager + leader election 未开启；个人项目的集群规模用不上，开了反而增加演示复杂度 | 打开 `--leader-elect`、副本数 ≥2、配合 PDB 与反亲和 |
+| **伸缩决策的可观测性**（`kubestasis_scaling_decisions_total`、Grafana 面板） | 决策过程目前只在 Events 和日志里；导出指标是"锦上添花"，不影响正确性 | 接 controller-runtime 的 metrics registry + 一组 recording rules；工作量不大，排期在后 |
+| **envtest 级别的控制循环回归** | 现在是 fake client 单测（快、但不跑真实 apiserver 默认值/校验）+ kind e2e（真、但慢且只覆盖三条链路）；中间层确实缺 | 引入 envtest（需要 etcd/kube-apiserver 二进制），把 CRD 默认值、webhook 联动、status 子资源这些"只有真 apiserver 才有的行为"纳入回归 |
+| **升级/迁移路径**（CRD 版本演进、v1alpha1 → v1beta1） | 还没有真实用户，谈 conversion webhook 为时过早 | 定义 v1beta1 + conversion webhook + 存储版本迁移演练 |
+| **安全加固的完整闭环**（NetworkPolicy、seccomp、RBAC 最小化审计） | 已有非 root、只读根文件系统、镜像签名校验；但没有逐条做 CIS Benchmark 对照 | 用 kube-bench / Kubescape 扫一遍，按报告逐项修 |
+| **压测结论的普适性** | 见 [压测报告](benchmark/hpa-vs-kubestasis.md) 的"口径限定"一节：单节点、单应用、CPU 忙等模拟，结论只在同口径下成立 | 多节点、多应用混部、真实业务流量回放 |
+| **缩容没有稳定窗口**（短促低谷会触发误缩容） | 压测 run5 抓到实证：突发#2 起点 loadgen 还没出流量（1m 窗口均值 30-50），控制器按信号把 4 缩到 3，13s 后又扩回 5。HPA 的 300s 稳定窗口就是防这个的，我们没做——加"信号需持续低于目标 N 秒才缩容"是语义级改动（新 CRD 字段 + 状态机），不想在参数没校准的情况下拍一个数 | 在 AppStatus 里记"连续低于目标的评估次数"，连续 ≥2 次才允许缩容；配合 envtest 回归 |
+
+
+
+## 八、下一步（11.05 起）
+
+1. ~~P1 指标源~~ / ~~P2 自愈~~ / ~~P3 Webhook~~ / ~~P4 mini-Informer~~ / ~~压测对比~~：**全部完成**（2026-11-03 ~ 11-04）
+2. **第 3 周剩下的硬骨头**：
+   - envtest 集成测试（控制循环级回归，补 fake client 与 kind e2e 之间的断层）
    - Helm Chart（kustomize 之外的第二种安装形态）
-3. 可选增强（不承诺）：Kyverno 策略进 CI kind 集群实测、决策指标导出（`kubestasis_scaling_decisions_total`）
+   - 决策指标导出 + Grafana 面板（让"为什么这次没扩"可被查询，而不是翻日志）
+3. 可选增强（不承诺）：Kyverno 策略进 CI kind 集群实测、CRD v1beta1 + conversion
 
-## 八、每日勾选
+## 九、每日勾选
 
 | 完成日 | 事项 | 状态变化 |
 |---|---|---|
@@ -126,6 +146,7 @@
 | 2026-11-03 | P1 指标源 + 31 个单测 + 真集群端到端验证 + 仓库描述/topics + GitHub 主页 README | 伸缩引擎从"休眠"到"集群验证过"；0 测试 → 31 用例；修掉 omitempty 结构体序列化 bug |
 | 2026-11-03 下午 | P1 真实指标源演示（真 Prometheus + 打流）+ P2 自愈引擎落地 + 26 个 healer 用例 | P1/P2 从"未验证"到"真集群跑通"；31 → 57 用例；踩到并修复"静态 Service 抓取导致 counter 非单调"的指标坑 |
 | 2026-11-03 晚 | P3 Webhook + P4 mini-Informer + 评审三连修复（冲突写路径/魔法数字可配/CI 覆盖 P2）+ AI 推理信号 + cosign/Kyverno + 更名 KubeStasis | 57 → 103 用例；P0–P4 全闭环；真集群复现并修掉两个新坑（见下） |
+| 2026-11-04 | 对照压测（HPA vs KubeStasis）+ CRD resources/env 透传 + webhook 校验配套 | 五轮压测，前四轮全部被自己推翻（详见压测报告）；修复渐进缩容跨步竞态（status 先于 spec 写入）；报告与原始 CSV 入库；103 → 113 用例 |
 
 ### 11.03 晚新踩的坑（已修，写进记忆）
 
@@ -134,3 +155,9 @@
 3. **caBundle 在 `clientConfig` 下**：patch 路径 `/webhooks/N/clientConfig/caBundle`，不是 `/webhooks/N/caBundle`
 4. **rollout 完成 ≠ webhook 可服务**：endpoint 就绪有秒级延迟，CI 负向用例要对 InternalError 重试、只对 Forbidden 断言
 5. **乒乓回滚**（本轮 kind CI 抓到的真 bug）：回滚到 v1 成功后，旧 RS 的 crash Pod 还没清完，下一轮 Inspect 仍不健康 → "上一个不同镜像"恰好是刚滚走的 v2-crash → 滚回坏版本（v2→v1→v2，同一秒内两次 L3；DD 本地没暴露是因为缓存/滚动时序碰巧错开）。修复：`Inspect` 报告携带 `BadImages`（不健康 Pod 的镜像），L3 选版排除坏镜像；CI 增加"回滚后再盯 3 分钟"的防乒乓断言。教训：**回滚类逻辑的验证不能停在"看到回滚发生"，必须验证"停在回滚结果上"**
+
+### 11.04 压测轮踩的坑
+
+1. **Prometheus 的 `scrape_timeout` 必须 ≤ `scrape_interval`**：为了扛住饱和 Pod 的慢 `/metrics` 把 timeout 调到 20s，却忘了 interval 还是 5s —— Prometheus 直接拒绝启动、整轮压测的 QPS 信号全为 0（run3 报废）。且它崩得不明显：Pod 在 CrashLoopBackOff，压测脚本照常出数据，只是那一列恒为 0
+2. **写 spec 会立刻触发下一轮 Reconcile，早于本轮 status 写入可见**：冷却窗口若存在 status 里，spec patch 引发的 Reconcile 会读到旧 status → 冷却形同虚设，渐进缩容 3→2→1 在一个采样窗口连跳（run4 报废）。修复：先写 status 再写 spec（watch 事件按 rv 有序，先写的必先到 cache）。教训：**凡是"本轮写、下轮读"的状态，顺序本身就是正确性的一部分**
+3. **压测对照的前提是"两边都真的在跑"**：run3 里 HPA 侧数据完全正常、KS 侧恒为 1 副本——看起来像"KS 不扩容"，实际是监控栈挂了。看对照数据的第一件事是验证**对弱势一侧的输入是否存在**，而不是急着解释结果

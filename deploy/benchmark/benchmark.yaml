@@ -1,0 +1,344 @@
+# 压测对照环境：原生 HPA vs KubeStasis
+#
+# 公平性约定（缺一条对比就不可信）：
+#   1. 同一镜像（kubestasis-demoapp:v1，-crash 之外的同一二进制）、同一 CPU 忙等参数
+#   2. 同一资源声明（requests 250m / limits 500m）——单 Pod 吞吐上限约 62 QPS
+#   3. 同一副本上下限（1..5）
+#   4. 同一流量发生器（demoapp 的 -loadgen 模式）、同一注入时刻
+#   5. 两侧各配一份 Prometheus 指标抓取，HPA 走 metrics-server 的 CPU，
+#      KubeStasis 走 Prometheus 的 QPS——各自用"自己的原生信号"，不人为削弱对手
+#
+# 唯一变量：伸缩器本身。HPA 保持全默认行为（含 scaleDown stabilization 300s），
+# KubeStasis 用默认迟滞带 10% + 冷却 120s + 渐进缩容 20%。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bench
+---
+# ---------------- Prometheus（只给 KubeStasis 用，HPA 不依赖它） ----------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: bench
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prometheus
+  namespace: bench
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "endpoints", "services"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prometheus
+  namespace: bench
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: bench
+roleRef:
+  kind: Role
+  name: prometheus
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: bench
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+      # 饱和 Pod 上 /metrics 会变慢（CPU 被业务抢走）。timeout 必须 <= interval
+      # （run3 教训：timeout 20s > interval 5s 会让 Prometheus 拒绝启动、CrashLoop，
+      # KS 的 QPS 信号全程为 0）。15s 间隔 + 10s 超时，rate[1m] 仍有 4 个采样点。
+      scrape_timeout: 10s
+    scrape_configs:
+      # 按 Pod 抓取（静态 Service 会被随机路由到不同后端，counter 非单调）
+      - job_name: benchapp
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [bench]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_container_port_name]
+            regex: http
+            action: keep
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: bench
+  labels:
+    app.kubernetes.io/name: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: prometheus
+    spec:
+      serviceAccountName: prometheus
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.54.1
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.retention.time=2h
+            - --web.enable-lifecycle
+          ports:
+            - name: web
+              containerPort: 9090
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: bench
+spec:
+  selector:
+    app.kubernetes.io/name: prometheus
+  ports:
+    - name: web
+      port: 9090
+      targetPort: 9090
+---
+# ---------------- A 组：原生 HPA（CPU 50%，全默认行为） ----------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bench-hpa
+  namespace: bench
+  labels:
+    app: bench-hpa
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bench-hpa
+  template:
+    metadata:
+      labels:
+        app: bench-hpa
+    spec:
+      containers:
+        - name: app
+          image: kubestasis-demoapp:v1-bench
+          imagePullPolicy: IfNotPresent
+          env:
+            # demoapp 用这两个变量给指标打标签，与 KubeStasis 注入的约定一致
+            - name: APP_NAME
+              value: bench-hpa
+            - name: POD_NAMESPACE
+              value: bench
+            # 每请求忙等 8ms：CPU 消耗与 QPS 成正比，CPU 型 HPA 才有意义
+            - name: CPU_SPIN_MS
+              value: "8"
+          ports:
+            - name: http
+              containerPort: 8080
+          resources:
+            requests:
+              cpu: 250m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bench-hpa
+  namespace: bench
+spec:
+  selector:
+    app: bench-hpa
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: bench-hpa
+  namespace: bench
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: bench-hpa
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 50 # 默认容忍度 10%，即 55% 以下不动作
+---
+# ---------------- B 组：KubeStasis（QPS 信号，默认迟滞/冷却/渐进缩容） ----------------
+apiVersion: kubestasis.io/v1alpha1
+kind: App
+metadata:
+  name: bench-ks
+  namespace: bench
+spec:
+  image: kubestasis-demoapp:v1-bench
+  replicas: 1
+  port: 8080
+  # 与 HPA 组逐字段对齐，保证单 Pod 吞吐上限一致（500m / 8ms ≈ 62 QPS）
+  resources:
+    requests:
+      cpu: 250m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 128Mi
+  # 与 HPA 组同样的每请求忙等，保证两侧单 Pod 吞吐上限都约 62 QPS
+  env:
+    - name: CPU_SPIN_MS
+      value: "8"
+  scaling:
+    minReplicas: 1
+    maxReplicas: 5
+    metrics:
+      - type: QPS
+        # 与 HPA 的 50% 利用率等余量：250m request × 50% ÷ 8ms ≈ 15.6 QPS/Pod，取 16
+        target: "16"
+---
+# ---------------- 流量发生器：每侧两份（稳态 + 突发） ----------------
+# 稳态 12 QPS 常开，模拟业务基线；突发 150 QPS 由脚本切换 replicas 0/1 注入
+# （250 是 run2 的教训：4 倍超卖下单 Pod 的 /metrics 都抓不动，信号直接归零）。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen-steady-hpa
+  namespace: bench
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loadgen-steady-hpa
+  template:
+    metadata:
+      labels:
+        app: loadgen-steady-hpa
+    spec:
+      containers:
+        - name: loadgen
+          image: kubestasis-demoapp:v1-bench
+          args:
+            - -loadgen
+            - http://bench-hpa.bench.svc:8080
+            - -qps
+            - "12"
+          resources:
+            requests:
+              cpu: 50m
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen-burst-hpa
+  namespace: bench
+spec:
+  replicas: 0 # 默认关闭，由脚本在突发窗口拉到 1
+  selector:
+    matchLabels:
+      app: loadgen-burst-hpa
+  template:
+    metadata:
+      labels:
+        app: loadgen-burst-hpa
+    spec:
+      containers:
+        - name: loadgen
+          image: kubestasis-demoapp:v1-bench
+          args:
+            - -loadgen
+            - http://bench-hpa.bench.svc:8080
+            - -qps
+            - "150"
+          resources:
+            requests:
+              cpu: 100m
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen-steady-ks
+  namespace: bench
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loadgen-steady-ks
+  template:
+    metadata:
+      labels:
+        app: loadgen-steady-ks
+    spec:
+      containers:
+        - name: loadgen
+          image: kubestasis-demoapp:v1-bench
+          args:
+            - -loadgen
+            - http://bench-ks.bench.svc:8080
+            - -qps
+            - "12"
+          resources:
+            requests:
+              cpu: 50m
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen-burst-ks
+  namespace: bench
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: loadgen-burst-ks
+  template:
+    metadata:
+      labels:
+        app: loadgen-burst-ks
+    spec:
+      containers:
+        - name: loadgen
+          image: kubestasis-demoapp:v1-bench
+          args:
+            - -loadgen
+            - http://bench-ks.bench.svc:8080
+            - -qps
+            - "150"
+          resources:
+            requests:
+              cpu: 100m
