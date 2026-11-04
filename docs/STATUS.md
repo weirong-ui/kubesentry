@@ -28,7 +28,7 @@
 | 状态真实性 | ✅ | `NAME sample PHASE Stable READY 2 DESIRED 2`；`status.conditions` 出现 `Available=True / Progressing=False` |
 | Events | ✅ | `kubectl get events --field-selector reason=KubeStasisReconcile` → `app available: 2/2 replicas ready` |
 | 控制器日志 | ✅ | `ERROR` 计数 = 0 |
-| CI | ✅ | 4 个 job 全绿：`docs` / `build`（gofmt+vet+build+test）/ `e2e` / `image`（多架构 + cosign 签名自验）。11-04 最新：run [41801203117](https://github.com/weirong-ui/kubestasis/actions/runs/41801203117)，26m06s。e2e 覆盖三条链路：**P0**（部署+Available）+ **P3**（webhook 拒 `:latest`、replicas 跟随 minReplicas 默认值）+ **P2**（crash 镜像 → L2→L3 自动回滚 + 防乒乓断言） |
+| CI | ✅ | 5 个 job 全绿：`docs` / `build`（gofmt+vet+build+test）/ `chart`（helm lint + 双形态渲染 + Chart CRD 与 controller-gen 产物逐字节 diff）/ `e2e` / `image`（多架构 + cosign 签名自验）。11-04 晚最新：run [41823059562](https://github.com/weirong-ui/kubestasis/actions/runs/41823059562)，24m06s。e2e 覆盖三条链路：**P0**（部署+Available）+ **P3**（webhook 拒 `:latest`、replicas 跟随 minReplicas 默认值）+ **P2**（crash 镜像 → L2→L3 自动回滚 + 防乒乓断言） |
 
 ## 三、三栏表：能力 / 真实状态 / 证据与缺口
 
