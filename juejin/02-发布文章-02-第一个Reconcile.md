@@ -17,7 +17,7 @@
 
 ```bash
 # 初始化项目：--domain 是 CRD 的 API group 后缀，--repo 是 module 路径
-kubebuilder init --domain sentry.io --repo github.com/weirong-ui/kubestasis
+kubebuilder init --domain kubestasis.io --repo github.com/weirong-ui/kubestasis
 
 # 创建 API：同时生成 CRD（--resource）和控制器（--controller）
 kubebuilder create api --group apps --version v1alpha1 --kind App --resource --controller
@@ -30,7 +30,7 @@ kubebuilder create api --group apps --version v1alpha1 --kind App --resource --c
 ```
 kubestasis/
 ├── api/v1alpha1/
-│   ├── groupversion_info.go   # GVK 注册（Group=apps.sentry.io Version=v1alpha1）
+│   ├── groupversion_info.go   # GVK 注册（Group=kubestasis.io Version=v1alpha1）
 │   ├── app_types.go           # CRD 的 Spec/Status 定义
 │   └── zz_generated.deepcopy.go  # controller-gen 生成的深拷贝（不要手改）
 ├── internal/controller/
@@ -50,7 +50,7 @@ mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
     Scheme:                 scheme,
     HealthProbeBindAddress: probeAddr,
     LeaderElection:         enableLeaderElection,
-    LeaderElectionID:       "kubestasis.sentry.io",
+    LeaderElectionID:       "kubestasis.io",
 })
 
 if err := (&controller.AppReconciler{
@@ -75,7 +75,7 @@ Manager 是"大管家"，它替你管了四件事：
 
 ```go
 // +kubebuilder:object:generate=true
-// +groupName=apps.sentry.io
+// +groupName=kubestasis.io
 package v1alpha1
 
 // +kubebuilder:validation:Enum=QPS;P99Latency;ErrorRate
