@@ -18,9 +18,10 @@ limitations under the License.
 //
 // 设计要点（对应掘金文章 03《为什么 HPA 会震荡》）：
 //  1. 多信号取最紧急者：desired = max(ceil(replicas × current/target))
-//  2. 冷却窗口：冷却期内拒绝一切缩容，扩容可紧急放行
-//  3. 迟滞带：目标与当前差值 ≤ max(1, 10%) 时不动作
-//  4. 缩容渐进：每次最多 -20%；扩容一步到位（不对称策略）
+//  2. 冷却窗口：冷却期内拒绝缩容，扩容可紧急放行
+//  3. 缩容稳定窗口：信号要连续低于目标够久才缩，防止"突发刚起、均值没抬上来"误缩
+//  4. 迟滞带：只挡缩容，扩容直通（对称迟滞会吃掉突发时的扩容）
+//  5. 缩容渐进：每次最多 -20%；扩容一步到位（不对称策略）
 package scaler
 
 import (
@@ -29,6 +30,7 @@ import (
 	"math"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -43,12 +45,28 @@ const (
 	ActionScaleDown Action = "ScaleDown"
 )
 
+// 决策原因码：**固定枚举**，专门给 metrics 当 label 用。
+// 自由文本的 Reason 会带具体秒数/副本数（"blocked by stabilization window (17s/60s)"），
+// 直接当 label 就是基数炸弹；两者一个给人看（Events/日志），一个给机器聚合。
+const (
+	ReasonNoPolicy        = "no_policy"
+	ReasonNoMetricsSource = "no_metrics_source"
+	ReasonHysteresis      = "hysteresis"
+	ReasonStabilizing     = "stabilizing"
+	ReasonCooldown        = "cooldown"
+	ReasonScaleUp         = "scale_up"
+	ReasonScaleDown       = "scale_down"
+	ReasonWithinBounds    = "within_bounds"
+)
+
 // Decision 一次伸缩决策的完整上下文，用于 Event 留痕与单元测试断言.
 type Decision struct {
 	Action       Action
 	FromReplicas int32
 	ToReplicas   int32
 	Reason       string
+	// ReasonCode 固定的原因枚举（见上面的常量），供 metrics 使用
+	ReasonCode string
 	// Signals 各信号独立计算出的期望副本数，方便调试和可视化
 	Signals map[appsv1alpha1.MetricType]int32
 }
@@ -106,12 +124,12 @@ func (e *Engine) Decide(ctx context.Context, app *appsv1alpha1.App, nowFn func()
 	// 没配伸缩策略：明确说明，而不是按零值继续算（minReplicas=0 会把副本缩没）
 	if policy == nil {
 		return Decision{Action: ActionNone, FromReplicas: current, ToReplicas: current,
-			Reason: "no scaling policy configured", Signals: signals}
+			Reason: "no scaling policy configured", ReasonCode: ReasonNoPolicy, Signals: signals}
 	}
 
 	if e.source == nil {
 		return Decision{Action: ActionNone, FromReplicas: current, ToReplicas: current,
-			Reason: "no metrics source configured (P1)", Signals: signals}
+			Reason: "no metrics source configured (P1)", ReasonCode: ReasonNoMetricsSource, Signals: signals}
 	}
 
 	// 多信号取最紧急者
@@ -145,14 +163,26 @@ func (e *Engine) Decide(ctx context.Context, app *appsv1alpha1.App, nowFn func()
 	// 例外：回落到 minReplicas 不受迟滞带约束，否则 3 副本时永远缩不回 2
 	backToMin := desired == policy.MinReplicas && current > policy.MinReplicas
 	if desired < current && current-desired <= hysteresis && !backToMin {
+		// 带内不动作 = 需求与供给基本匹配，不算"低谷"，稳定窗口的计时清掉
+		app.Status.BelowTargetSince = nil
 		return Decision{Action: ActionNone, FromReplicas: current, ToReplicas: current,
-			Reason: "scale-down within hysteresis band", Signals: signals}
+			Reason: "scale-down within hysteresis band", ReasonCode: ReasonHysteresis, Signals: signals}
+	}
+
+	// 缩容稳定窗口：需求必须连续低于目标够久，才承认低谷是真的。
+	// 计时状态放在 status 里而不是内存里——控制器会重启，内存计时一重启就清零，
+	// 恰好在滚动发布时给出一次"窗口已满"的假信号。
+	if desired >= current {
+		app.Status.BelowTargetSince = nil
+	} else if msg, ok := e.stabilizeScaleDown(app); !ok {
+		return Decision{Action: ActionNone, FromReplicas: current, ToReplicas: current,
+			Reason: msg, ReasonCode: ReasonStabilizing, Signals: signals}
 	}
 
 	// 冷却窗口：冷却期内拒绝缩容（扩容放行）
 	if e.inCooldown(app) && desired < current {
 		return Decision{Action: ActionNone, FromReplicas: current, ToReplicas: current,
-			Reason: "scale down blocked by cooldown window", Signals: signals}
+			Reason: "scale down blocked by cooldown window", ReasonCode: ReasonCooldown, Signals: signals}
 	}
 
 	// 缩容渐进：单次最多减 scaleDownStepPercent%（默认 20%），且至少减 1 个。
@@ -168,13 +198,35 @@ func (e *Engine) Decide(ctx context.Context, app *appsv1alpha1.App, nowFn func()
 	}
 
 	action := ActionNone
-	reason := "within bounds"
+	reason, code := "within bounds", ReasonWithinBounds
 	if desired > current {
-		action, reason = ActionScaleUp, "load above targets"
+		action, reason, code = ActionScaleUp, "load above targets", ReasonScaleUp
 	} else if desired < current {
-		action, reason = ActionScaleDown, "load below targets"
+		action, reason, code = ActionScaleDown, "load below targets", ReasonScaleDown
 	}
-	return Decision{Action: action, FromReplicas: current, ToReplicas: desired, Reason: reason, Signals: signals}
+	return Decision{Action: action, FromReplicas: current, ToReplicas: desired,
+		Reason: reason, ReasonCode: code, Signals: signals}
+}
+
+// stabilizeScaleDown 判断"持续低于目标"是否已经够久，允许缩容。
+// 返回 (给人看的原因, 是否放行)。副作用：必要时把计时起点写进 status（由控制器持久化）。
+func (e *Engine) stabilizeScaleDown(app *appsv1alpha1.App) (string, bool) {
+	window := time.Duration(app.Spec.Scaling.StabilizationSeconds()) * time.Second
+	if window <= 0 {
+		return "", true // 显式关闭
+	}
+	now := e.nowFunc()
+	if app.Status.BelowTargetSince == nil {
+		t := metav1.NewTime(now)
+		app.Status.BelowTargetSince = &t
+		return fmt.Sprintf("scale-down candidate: signals must stay below targets for %s", window), false
+	}
+	elapsed := now.Sub(app.Status.BelowTargetSince.Time)
+	if elapsed < window {
+		return fmt.Sprintf("scale down blocked by stabilization window (%s of %s)",
+			elapsed.Truncate(time.Second), window), false
+	}
+	return "", true
 }
 
 func (e *Engine) inCooldown(app *appsv1alpha1.App) bool {

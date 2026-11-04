@@ -112,6 +112,21 @@ type ScalingPolicy struct {
 	// +optional
 	HysteresisPercent int `json:"hysteresisPercent,omitempty"`
 
+	// ScaleDownStabilizationSeconds 缩容稳定窗口：信号必须连续低于目标超过该秒数，
+	// 才允许缩容（任一采样回到目标以上就重新计时）。默认 60s，即 15s 巡检下约 4 轮。
+	//
+	// 它补的是"没有缩容稳定窗口"这个设计缺口（见 docs/STATUS.md 第七节）：
+	// HPA 用 300s 稳定窗口防低谷误缩，我们之前只有冷却窗口（防"刚扩完就缩"），
+	// 挡不住"突发刚起、均值还没抬上去"的那一两轮。0 表示关闭（恢复旧行为）。
+	//
+	// 为什么这里用指针：0 是**有意义的合法值**（显式关闭），而 int + omitempty
+	// 会把 0 吞掉、被 CRD 默认值改回 60——"关闭"这个动作就永远表达不出来。
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=3600
+	// +kubebuilder:default=60
+	// +optional
+	ScaleDownStabilizationSeconds *int32 `json:"scaleDownStabilizationSeconds,omitempty"`
+
 	// ErrorRateScaleUpPercent 错误率超阈值时的单次扩容比例。
 	// 错误率无法换算成副本数，只能按比例吸收；连续超阈值会在多轮 Reconcile 里持续扩。
 	// +kubebuilder:validation:Minimum=1
@@ -143,6 +158,16 @@ func (p *ScalingPolicy) ErrorRateStep() int {
 		return 20
 	}
 	return p.ErrorRateScaleUpPercent
+}
+
+// StabilizationSeconds 返回缩容稳定窗口秒数。
+// 注意与其它 knob 的区别：这里 0 是**合法值**（显式关闭），不能当成"未设置"回退，
+// 所以只有指针为 nil 时才回退到默认 60s。
+func (p *ScalingPolicy) StabilizationSeconds() int {
+	if p == nil || p.ScaleDownStabilizationSeconds == nil {
+		return 60
+	}
+	return int(*p.ScaleDownStabilizationSeconds)
 }
 
 // CanaryPolicy 金丝雀发布观察策略.
@@ -201,6 +226,56 @@ func (p *HealthPolicy) PodRestartThreshold() int32 {
 	return p.RestartThreshold
 }
 
+// ProbeType 探针的探测方式.
+// 默认 TCPSocket：它只要求端口在监听，对任何语言/框架都成立；
+// HTTPGet 需要应用在指定 path 上返回 2xx/3xx，配错会让 Pod 永远不 Ready。
+// +kubebuilder:validation:Enum=TCPSocket;HTTPGet
+type ProbeType string
+
+const (
+	ProbeTCPSocket ProbeType = "TCPSocket"
+	ProbeHTTPGet   ProbeType = "HTTPGet"
+)
+
+// ProbeConfig 容器探针配置。省略的字段由控制器按下面的默认值补齐.
+//
+// readiness 与 liveness 的默认策略**刻意不同**：
+//   - readiness 省略时仍然注入（默认 TCPSocket）：没有就绪探针，Pod 一启动
+//     就被算作 Ready，Service 会把流量打给还没开始监听的实例，
+//     status.currentReplicas（取自 readyReplicas）也会虚高。
+//   - liveness 省略时**不注入**：存活探针配错的代价是"应用没死却被反复重启"，
+//     比没有更危险；就绪探针配错的代价只是"晚一点接流量"。不对称是有意的。
+type ProbeConfig struct {
+	// Type 探测方式，默认 TCPSocket.
+	// +kubebuilder:validation:Enum=TCPSocket;HTTPGet
+	// +optional
+	Type ProbeType `json:"type,omitempty"`
+
+	// Path HTTP 探针路径，仅 Type=HTTPGet 时使用，必须以 "/" 开头.
+	// +optional
+	Path string `json:"path,omitempty"`
+
+	// InitialDelaySeconds 容器启动后等待多久开始探测；0 表示用该探针的默认值.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	InitialDelaySeconds int32 `json:"initialDelaySeconds,omitempty"`
+
+	// PeriodSeconds 探测周期；0 表示用默认值.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	PeriodSeconds int32 `json:"periodSeconds,omitempty"`
+
+	// TimeoutSeconds 单次探测超时；0 表示用默认值.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty"`
+
+	// FailureThreshold 连续失败多少次判定为失败；0 表示用默认值.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	FailureThreshold int32 `json:"failureThreshold,omitempty"`
+}
+
 // AppSpec defines the desired state of App.
 type AppSpec struct {
 	// Image 容器镜像，禁止 latest（Validating Webhook 强制）.
@@ -220,6 +295,17 @@ type AppSpec struct {
 	// +kubebuilder:validation:Maximum=65535
 	// +kubebuilder:default=8080
 	Port int32 `json:"port"`
+
+	// Readiness 就绪探针。省略时注入默认探针（TCPSocket，端口取 spec.port）——
+	// 托管应用默认具备"端口能连上才算就绪"的语义，而不是"容器起来了就算就绪"。
+	// +optional
+	Readiness *ProbeConfig `json:"readiness,omitempty"`
+
+	// Liveness 存活探针。**省略时不注入**：错误配置的存活探针会造成
+	// "应用没死却被反复重启"（比如探针依赖的数据库短暂不可用），
+	// 这类故障比进程假死更难排查。只有明确知道自己在做什么时才配。
+	// +optional
+	Liveness *ProbeConfig `json:"liveness,omitempty"`
 
 	// Scaling 伸缩策略。可省略：省略时不做伸缩决策。
 	// 必须是指针：omitempty 对结构体不生效，值类型会把省略的字段
@@ -269,6 +355,14 @@ type AppStatus struct {
 	// LastScalingAt 上一次伸缩动作时间，冷却窗口的判断依据.
 	// +optional
 	LastScalingAt *metav1.Time `json:"lastScalingAt,omitempty"`
+
+	// BelowTargetSince 信号**首次**低于目标（即出现缩容候选）的时间，
+	// 缩容稳定窗口的起点。任一轮评估不再低于目标就清空——
+	// 语义是"需求要连续低于目标足够久，才认为低谷是真的"。
+	// 没有它，突发流量刚起来、1m 均值还没抬上去的那一两轮，
+	// 就会把刚扩出来的副本缩回去（压测 run5 抓到的 4→3→13s 后扩回 5）。
+	// +optional
+	BelowTargetSince *metav1.Time `json:"belowTargetSince,omitempty"`
 
 	// LastHealAction 最近一次自愈动作描述.
 	// +optional

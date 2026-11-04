@@ -8,10 +8,15 @@ spec:
   image: nginx:1.27-alpine
   replicas: 2
   port: 80
+  # 探针：readiness 省略时自动注入 TCP 探针（端口取 port）；liveness 只在显式声明时注入
+  readiness:
+    type: HTTPGet
+    path: /
   scaling:
     minReplicas: 1
     maxReplicas: 10
     cooldownSeconds: 120
+    scaleDownStabilizationSeconds: 60   # 信号需持续低于目标 60s 才缩容，0 关闭
     metrics:
       - type: QPS
         target: "500"

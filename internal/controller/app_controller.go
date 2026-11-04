@@ -37,6 +37,7 @@ import (
 
 	appsv1alpha1 "github.com/weirong-ui/kubestasis/api/v1alpha1"
 	"github.com/weirong-ui/kubestasis/internal/healer"
+	"github.com/weirong-ui/kubestasis/internal/metrics"
 	"github.com/weirong-ui/kubestasis/internal/scaler"
 )
 
@@ -107,6 +108,9 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	if !app.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&app, appFinalizer) {
 			// 增强方向（不在 P0–P4 承诺内）：删除前把自愈审计记录导出到外部存储
+			// 时序必须在这里清：CounterVec/GaugeVec 不会自己回收 label 组合，
+			// 反复建删同名 App 会留下永远不归零的残留。
+			metrics.Forget(app.Namespace, app.Name)
 			controllerutil.RemoveFinalizer(&app, appFinalizer)
 			if err := r.Update(ctx, &app); err != nil {
 				return ctrl.Result{}, err
@@ -190,7 +194,22 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		})
 	}
 
+	// 稳定窗口的计时起点可能被本轮决策改写（首次出现缩容候选时置位、
+	// 需求回到目标以上时清零）。先记下旧值，决策后单独 patch ——
+	// updateStatus 里的 MergeFrom 基线取自进入它那一刻，早于这里的修改，
+	// 打不进同一个 patch。
+	prevBelowTarget := app.Status.BelowTargetSince
 	decision := r.Scaler.Decide(ctx, &app, time.Now)
+
+	// 无论动没动都记录：只统计"动过"的决策，就回答不了"为什么一直没扩"
+	metrics.Record(&app, decision)
+
+	if !sameTime(prevBelowTarget, app.Status.BelowTargetSince) {
+		if err := r.patchBelowTargetSince(ctx, &app); err != nil {
+			return r.failOn(ctx, &app, "scale", err)
+		}
+	}
+
 	if decision.Action != scaler.ActionNone {
 		// 冷却起点必须先于 spec 写入落地：spec patch 会立刻触发下一轮 Reconcile，
 		// 若那一刻 cache 里的 status 还没带上 LastScalingAt，冷却窗口形同虚设——
@@ -219,7 +238,8 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 }
 
 // ensureDeployment 按 App spec 创建或更新 Deployment（幂等的 CreateOrUpdate）。
-// 安全上下文等默认值由 Defaulting Webhook 注入；此处只负责业务字段对齐。
+// 探针在这里生成：就绪探针默认注入，存活探针只在显式配置时注入（原因见 readinessProbe）。
+// 安全上下文不在控制器里注入（App 级别），Operator 自身的安全上下文写在 Deployment 清单里。
 func (r *AppReconciler) ensureDeployment(ctx context.Context, app *appsv1alpha1.App) (*appsv1.Deployment, error) {
 	want := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: app.Name, Namespace: app.Namespace},
@@ -237,6 +257,10 @@ func (r *AppReconciler) ensureDeployment(ctx context.Context, app *appsv1alpha1.
 			Name:  app.Name,
 			Image: app.Spec.Image,
 			Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: appPort(app), Protocol: corev1.ProtocolTCP}},
+			// 探针：就绪默认注入（没有它 Pod 一启动就被算 Ready，
+			// Service 会把流量打给还没监听的实例）；存活默认不注入
+			ReadinessProbe: readinessProbe(app),
+			LivenessProbe:  livenessProbe(app),
 			// 资源声明透传：省略时保持 nil（BestEffort），声明了就严格照抄，
 			// 不在控制器里偷偷加默认值——资源预算必须由使用者显式决定。
 			Resources: resourcesOf(app),
@@ -284,6 +308,82 @@ func (r *AppReconciler) ensureService(ctx context.Context, app *appsv1alpha1.App
 		return nil, fmt.Errorf("ensure service: %w", err)
 	}
 	return want, nil
+}
+
+// sameTime 判断两个时间指针是否表示同一时刻（都为 nil 也算相同）。
+func sameTime(a, b *metav1.Time) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Time.Equal(b.Time)
+}
+
+// patchBelowTargetSince 单独回写缩容稳定窗口的计时起点。
+// nil 语义是"计时清零"，用 JSON null 表达——省略字段的 merge patch 是"不改"，
+// 这两者在 JSON merge patch 里必须写清楚，否则低谷过去后计时永远不清。
+func (r *AppReconciler) patchBelowTargetSince(ctx context.Context, app *appsv1alpha1.App) error {
+	body := `{"status":{"belowTargetSince":null}}`
+	if app.Status.BelowTargetSince != nil {
+		body = `{"status":{"belowTargetSince":"` +
+			app.Status.BelowTargetSince.UTC().Format(time.RFC3339) + `"}}`
+	}
+	if err := r.Status().Patch(ctx, app, client.RawPatch(types.MergePatchType, []byte(body))); err != nil {
+		return fmt.Errorf("write belowTargetSince: %w", err)
+	}
+	return nil
+}
+
+// readinessProbe 生成就绪探针。**即使 spec.readiness 省略也注入**：
+// 没有就绪探针时，Pod 一启动就被标记 Ready，Service 会把流量打给还没开始监听
+// 的实例，status.currentReplicas（取自 readyReplicas）也会虚高——
+// 于是 "Available=True" 变成一个乐观信号。默认用 TCPSocket 而不是 HTTPGet：
+// TCP 探针只要求端口在监听，对任何框架都成立；HTTPGet 猜错路径会永远不 Ready。
+func readinessProbe(app *appsv1alpha1.App) *corev1.Probe {
+	cfg := app.Spec.Readiness
+	if cfg == nil {
+		cfg = &appsv1alpha1.ProbeConfig{}
+	}
+	return buildProbe(appPort(app), cfg, 3, 10, 2, 3)
+}
+
+// livenessProbe 只在显式配置时注入。存活探针配错的代价是"应用没死却被反复重启"
+// （探针依赖的依赖抖一下，健康实例就被 kubelet 打死），就绪探针配错的代价只是
+// 晚一点接流量。所以一个默认开、一个默认关，不对称是刻意的。
+func livenessProbe(app *appsv1alpha1.App) *corev1.Probe {
+	if app.Spec.Liveness == nil {
+		return nil
+	}
+	return buildProbe(appPort(app), app.Spec.Liveness, 15, 20, 3, 3)
+}
+
+// buildProbe 把 CRD 里的探针配置翻译成 corev1.Probe，0 值用各探针的默认值。
+func buildProbe(port int32, cfg *appsv1alpha1.ProbeConfig,
+	defInitial, defPeriod, defTimeout, defFailures int32) *corev1.Probe {
+
+	p := &corev1.Probe{
+		InitialDelaySeconds: pickPositive(cfg.InitialDelaySeconds, defInitial),
+		PeriodSeconds:       pickPositive(cfg.PeriodSeconds, defPeriod),
+		TimeoutSeconds:      pickPositive(cfg.TimeoutSeconds, defTimeout),
+		FailureThreshold:    pickPositive(cfg.FailureThreshold, defFailures),
+		SuccessThreshold:    1,
+	}
+	if cfg.Type == appsv1alpha1.ProbeHTTPGet {
+		path := cfg.Path
+		if path == "" {
+			path = "/"
+		}
+		p.HTTPGet = &corev1.HTTPGetAction{Path: path, Port: intstr.FromInt32(port)}
+		return p
+	}
+	p.TCPSocket = &corev1.TCPSocketAction{Port: intstr.FromInt32(port)}
+	return p
+}
+
+func pickPositive(v, def int32) int32 {
+	if v > 0 {
+		return v
+	}
+	return def
 }
 
 // statusPatch 一轮 Reconcile 需要落进 status 的信息。

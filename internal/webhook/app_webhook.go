@@ -204,6 +204,29 @@ func validateApp(app *appsv1alpha1.App) (admission.Warnings, error) {
 		envSeen[e.Name] = true
 	}
 
+	// 11. 探针：HTTPGet 的 path 必须能作为 URL 路径用；TCPSocket 配了 path 是
+	//     明显的配置笔误（会被静默忽略），提醒但不阻断
+	for _, p := range []struct {
+		field string
+		cfg   *appsv1alpha1.ProbeConfig
+	}{
+		{"readiness", app.Spec.Readiness},
+		{"liveness", app.Spec.Liveness},
+	} {
+		if p.cfg == nil {
+			continue
+		}
+		if p.cfg.Type == appsv1alpha1.ProbeHTTPGet {
+			if !strings.HasPrefix(p.cfg.Path, "/") {
+				errs = append(errs, fmt.Sprintf("spec.%s.path=%q 必须以 \"/\" 开头（Type=HTTPGet）",
+					p.field, p.cfg.Path))
+			}
+		} else if p.cfg.Path != "" {
+			warns = append(warns, fmt.Sprintf("spec.%s.path 只在 Type=HTTPGet 时生效，当前 Type=%s，该字段会被忽略",
+				p.field, p.cfg.Type))
+		}
+	}
+
 	if len(errs) > 0 {
 		return warns, fmt.Errorf("App %s/%s 未通过准入校验: %s", app.Namespace, app.Name, strings.Join(errs, "; "))
 	}

@@ -45,15 +45,20 @@ func (f fakeSource) DesiredReplicas(_ context.Context, _ *appsv1alpha1.App,
 }
 
 func newApp(replicas, min, max int32, cooldown int, metrics ...appsv1alpha1.MetricTarget) *appsv1alpha1.App {
+	// 稳定窗口默认关掉：本文件与 knobs/inference 的用例都在验证其它规则
+	// （迟滞/冷却/步长/多信号），开着窗口会让所有缩容断言先被拦一轮。
+	// 窗口本身由 stabilization_test.go 专门覆盖。
+	noStabilization := int32(0)
 	return &appsv1alpha1.App{
 		ObjectMeta: metav1.ObjectMeta{Name: "sample", Namespace: "default"},
 		Spec: appsv1alpha1.AppSpec{
 			Replicas: &replicas,
 			Scaling: &appsv1alpha1.ScalingPolicy{
-				MinReplicas:     min,
-				MaxReplicas:     max,
-				CooldownSeconds: cooldown,
-				Metrics:         metrics,
+				MinReplicas:                   min,
+				MaxReplicas:                   max,
+				CooldownSeconds:               cooldown,
+				Metrics:                       metrics,
+				ScaleDownStabilizationSeconds: &noStabilization,
 			},
 		},
 	}

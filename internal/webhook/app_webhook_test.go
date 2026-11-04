@@ -298,3 +298,50 @@ func TestValidate_UserEnvPasses(t *testing.T) {
 		t.Fatalf("user env rejected: %v", err)
 	}
 }
+
+// ---------- 探针校验 ----------
+
+// HTTPGet 的 path 必须以 "/" 开头：不拦的话运行期探针永远失败，
+// 表现为 Pod 一直 NotReady，但用户看不出是配置写错了。
+func TestValidate_HTTPProbePathMustBeAbsolute(t *testing.T) {
+	app := validApp()
+	app.Spec.Readiness = &appsv1alpha1.ProbeConfig{
+		Type: appsv1alpha1.ProbeHTTPGet,
+		Path: "healthz",
+	}
+	_, err := validateApp(app)
+	if err == nil || !strings.Contains(err.Error(), "必须以 \"/\" 开头") {
+		t.Fatalf("want absolute-path error, got %v", err)
+	}
+}
+
+// TCPSocket 配了 path 是明显笔误（会被静默忽略）——只警告，不阻断。
+func TestValidate_TCPProbeWithPathWarns(t *testing.T) {
+	app := validApp()
+	app.Spec.Liveness = &appsv1alpha1.ProbeConfig{Path: "/healthz"}
+	warns, err := validateApp(app)
+	if err != nil {
+		t.Fatalf("should not block: %v", err)
+	}
+	found := false
+	for _, w := range warns {
+		if strings.Contains(w, "liveness.path") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a warning about ignored liveness.path, got %v", warns)
+	}
+}
+
+// 合法探针配置必须放行（别把默认用法也拦了）。
+func TestValidate_ValidProbesPass(t *testing.T) {
+	app := validApp()
+	app.Spec.Readiness = &appsv1alpha1.ProbeConfig{
+		Type: appsv1alpha1.ProbeHTTPGet, Path: "/readyz", InitialDelaySeconds: 5,
+	}
+	app.Spec.Liveness = &appsv1alpha1.ProbeConfig{Type: appsv1alpha1.ProbeTCPSocket}
+	if _, err := validateApp(app); err != nil {
+		t.Fatalf("valid probes should pass: %v", err)
+	}
+}
