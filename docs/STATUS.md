@@ -21,13 +21,13 @@
 | `go build ./...` | ✅ | 通过（Go 1.27.3 本机，module `go 1.22.0`；k8s v0.31.1 / controller-runtime v0.19.0） |
 | `go vet ./...` | ✅ | 无输出 |
 | `gofmt -l` | ✅ | 无未格式化文件 |
-| `go test ./...` | ✅ | **79 个用例**全绿（scaler 27 + controller 8 + healer 33 + webhook 14） |
+| `go test ./...` | ✅ | **113 个用例**全绿（scaler 46 + controller 11 + healer 24 + webhook 21 + miniinformer 11，含子测试） |
 | 部署链路 | ✅ | Docker Desktop k8s v1.36.1：`kubectl apply` CRD+RBAC+Manager → 控制器 Pod `1/1 Running` |
 | 创建资源 | ✅ | `deployment.apps/sample 2/2`、`service/sample ClusterIP 80/TCP`、`endpoints 10.244.0.9,10.244.0.10` |
 | 状态真实性 | ✅ | `NAME sample PHASE Stable READY 2 DESIRED 2`；`status.conditions` 出现 `Available=True / Progressing=False` |
 | Events | ✅ | `kubectl get events --field-selector reason=KubeStasisReconcile` → `app available: 2/2 replicas ready` |
 | 控制器日志 | ✅ | `ERROR` 计数 = 0 |
-| CI | ✅ | 4 个 job 全绿：`docs` / `build`（gofmt+vet+build+test）/ `e2e` / `image`（多架构推送 GHCR）。run [41445360610](https://github.com/weirong-ui/kubestasis/actions/runs/41445360610)，耗时 14m52s。11-03 晚起 e2e 覆盖扩到三条链路：**P0**（部署+Available）+ **P3**（webhook 拒 `:latest`、replicas 跟随 minReplicas 默认值）+ **P2**（crash 镜像 → L2→L3 自动回滚断言） |
+| CI | ✅ | 4 个 job 全绿：`docs` / `build`（gofmt+vet+build+test）/ `e2e` / `image`（多架构 + cosign 签名自验）。11-04 最新：run [41801203117](https://github.com/weirong-ui/kubestasis/actions/runs/41801203117)，26m06s。e2e 覆盖三条链路：**P0**（部署+Available）+ **P3**（webhook 拒 `:latest`、replicas 跟随 minReplicas 默认值）+ **P2**（crash 镜像 → L2→L3 自动回滚 + 防乒乓断言） |
 
 ## 三、三栏表：能力 / 真实状态 / 证据与缺口
 
