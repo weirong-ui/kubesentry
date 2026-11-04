@@ -3,7 +3,7 @@
 > 本文件是**唯一可信的能力清单**。README 的一切对外描述以此为准，每完成一项就把状态改掉。
 > 最后更新：2026-11-04（补 vs 原生 HPA 压测对比、App 支持 resources/env、CRD group 更名 kubestasis.io）
 > 验收口径：代码能在干净集群上 `deploy → apply App → Available`，且有可复现的证据。
-> ⚠️ 项目原名 KubeSentry，2026-11-03 更名 KubeStasis；CRD group 于 2026-11-04 由 `kubestasis.io` 改为 `kubestasis.io`（不再沿用第三方商标）。
+> ⚠️ 项目原名 KubeSentry，2026-11-03 更名 KubeStasis；CRD group 于 2026-11-04 由 `apps.sentry.io` 改为 `kubestasis.io`（不再沿用第三方商标）。
 
 ## 一、当前结论
 
@@ -56,7 +56,7 @@
 | mini-Informer | ✅ 已实现 | `pkg/miniinformer/`：手写 ListWatch → DeltaFIFO（按键压缩去重）→ Store → Handler + 控制器侧 WorkQueue（幂等+不漏），泛型实现约 400 行，11 个用例含断线重列；与 client-go 的取舍差异逐条写在包注释与 [README](../pkg/miniinformer/README.md) |
 | 镜像签名与准入策略 | ✅ 已实现 | CI image job 用 cosign keyless 签 GHCR digest（GitHub OIDC → Fulcio → Rekor）并签完自验；`policies/kyverno-kubestasis.yaml`：禁 latest/无 tag + kubestasis-system 强制验签。CKS 考点变成可展示证据 |
 | Helm Chart | 🗓 规划中 | `charts/` 不存在，当前安装形态只有 kustomize。**未完成就是未完成**，README 不把它写成能力 |
-| 单元测试 | ✅ 113 用例 | scaler 39 + controller 10 + healer 33 + webhook 17 + miniinformer 11（新增：resources/env 透传与保留变量过滤、webhook 对 requests>limits 的拦截）。envtest 仍未做——现在的控制循环回归靠 kind e2e |
+| 单元测试 | ✅ 113 用例 | scaler 46 + controller 11 + healer 24 + webhook 21 + miniinformer 11 = 113（用 `--- PASS` 行数按包实测，和 §二 同一口径）。envtest 仍未做——现在的控制循环回归靠 kind e2e |
 | 压测与 HPA 对比表 | ✅ 已完成 | 2026-11-04：同镜像/同资源/同流量下 vs 原生 HPA（CPU 50%）的对照实验，5 秒粒度采样入库 `docs/benchmark/data.csv`，报告见 [docs/benchmark/hpa-vs-kubestasis.md](benchmark/hpa-vs-kubestasis.md)。结论有限定条件，报告里写清了口径与失效风险 |
 
 ## 四、11.02 夜这一轮改了什么（P0 收尾）

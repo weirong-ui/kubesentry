@@ -1,6 +1,10 @@
 # KubeStasis 设计文档
 
-> 版本：v1.0 ｜ 状态：设计中 → 实现 ｜ 作者：weirong
+> 版本：v1.1 ｜ 状态：已实现（P0–P4）｜ 作者：weirong
+>
+> **同步说明**：v1.0 写于编码之前，P0–P4 落地后有多处与代码不一致。v1.1 按 `api/v1alpha1/app_types.go`
+> 与 `internal/` 的实际实现逐节校对过（2026-11-04）。本文只描述**已经写进代码的行为**，
+> 未实现的部分单独标注「计划中」——以 [STATUS.md](STATUS.md) 为能力账本，两者冲突时以 STATUS 为准。
 
 ## 1. 背景与动机
 
@@ -18,10 +22,10 @@ KubeStasis 的目标：**用 Operator 模式把"伸缩决策"和"故障自愈"�
 **目标**
 - G1：一个 `App` CRD 描述应用全生命周期：镜像、副本、伸缩策略、健康策略
 - G2：多信号伸缩决策引擎，带冷却窗口与迟滞抑制
-- G3：分级自愈：扩容 → 降级 → 回滚，动作全部以 Kubernetes Event 留痕
+- G3：分级自愈：L1 扩容 → L2 摘除重建 → L3 回滚，动作全部以 Kubernetes Event 留痕
 - G4：金丝雀发布观察窗口，错误率超阈值自动回滚
-- G5：Admission Webhook 做校验与安全默认值注入
-- G6：envtest 单元测试覆盖率 ≥ 70%，GitHub Actions 全自动 CI
+- G5：Admission Webhook 做校验与跨字段默认（`replicas` 跟随 `minReplicas`）；安全默认值注入见 §6，**计划中**
+- G6：GitHub Actions 全自动 CI（gofmt / vet / build / 单测 + kind e2e + 镜像签名）；envtest 见 §5，**计划中**
 
 **非目标**
 - 不替代 HPA/KEDA（可以共存，KubeStasis 管自愈，HPA 管容量）
@@ -34,57 +38,69 @@ KubeStasis 的目标：**用 Operator 模式把"伸缩决策"和"故障自愈"�
 
 ```go
 type AppSpec struct {
-    // 镜像与副本
-    Image     string `json:"image"`
-    Replicas  *int32 `json:"replicas,omitempty"`
-
-    // 端口与探针
-    Port      int32           `json:"port"`
-    Readiness *ProbeConfig    `json:"readiness,omitempty"`
-
-    // 伸缩策略
-    Scaling ScalingPolicy `json:"scaling"`
-
-    // 健康与自愈策略
-    Health HealthPolicy `json:"health"`
+    Image     string            `json:"image"`
+    Replicas  *int32            `json:"replicas,omitempty"`  // 故意不给 CRD 默认值，见下方说明
+    Port      int32             `json:"port"`                // 默认 8080
+    Scaling   *ScalingPolicy    `json:"scaling,omitempty"`   // 指针，见下方说明
+    Health    *HealthPolicy     `json:"health,omitempty"`
+    Resources *corev1.ResourceRequirements `json:"resources,omitempty"` // 原样透传
+    Env       []corev1.EnvVar   `json:"env,omitempty"`       // listType=map，按 name 合并
 }
 
 type ScalingPolicy struct {
-    MinReplicas     int32          `json:"minReplicas"`
-    MaxReplicas     int32          `json:"maxReplicas"`
-    CooldownSeconds int            `json:"cooldownSeconds"`
-    Metrics         []MetricTarget `json:"metrics"`
+    MinReplicas             int32          `json:"minReplicas"`
+    MaxReplicas             int32          `json:"maxReplicas"`
+    CooldownSeconds         int            `json:"cooldownSeconds"`
+    Metrics                 []MetricTarget `json:"metrics,omitempty"`
+    ScaleDownStepPercent    int            `json:"scaleDownStepPercent,omitempty"`    // 默认 20
+    HysteresisPercent       int            `json:"hysteresisPercent,omitempty"`       // 默认 10
+    ErrorRateScaleUpPercent int            `json:"errorRateScaleUpPercent,omitempty"` // 默认 20
 }
 
+type MetricType string // QPS | P99Latency | ErrorRate       —— 通用业务信号
+                      // QueueDepth | TTFT | KVCacheUsage   —— AI 推理信号（vLLM 风格）
+
 type MetricTarget struct {
-    Type   MetricType `json:"type"`   // QPS | P99Latency | ErrorRate
-    Target string     `json:"target"` // "1000" / "200ms" / "0.01"
+    Type   MetricType `json:"type"`
+    Target string     `json:"target"` // "1000" / "200ms" / "0.01" / "5" / "1s" / "0.85"
 }
 
 type HealthPolicy struct {
-    Strategy  HealthStrategy `json:"strategy"` // graduated | observability-only
-    Canary    CanaryPolicy   `json:"canary"`
+    Strategy         HealthStrategy `json:"strategy"`                   // graduated | observability-only
+    ScaleUpPercent   int            `json:"scaleUpPercent,omitempty"`   // L1 扩容比例，默认 20
+    RestartThreshold int32          `json:"restartThreshold,omitempty"` // 兜底重启判定，默认 5
+    Canary           CanaryPolicy   `json:"canary,omitempty"`
 }
 
 type CanaryPolicy struct {
     Enabled            bool   `json:"enabled"`
-    ObservationSeconds int    `json:"observationSeconds"`
-    ErrorRateThreshold string `json:"errorRateThreshold"`
+    ObservationSeconds int    `json:"observationSeconds"`  // 默认 300，webhook 拒绝 <30
+    ErrorRateThreshold string `json:"errorRateThreshold"`  // 默认 "0.01"
 }
-```
 
-### 3.2 Status 设计
-
-```go
 type AppStatus struct {
-    Phase            string       `json:"phase"`   // Provisioning | Stable | Healing | RollingBack
-    CurrentReplicas  int32        `json:"currentReplicas"`
-    LastScalingAt    *metav1.Time `json:"lastScalingAt,omitempty"`
-    LastHealAction   string       `json:"lastHealAction,omitempty"`
-    RollbackRevision int64        `json:"rollbackRevision,omitempty"`
-    Conditions       []metav1.Condition `json:"conditions,omitempty"`
+    Phase             AppPhase           `json:"phase"` // Provisioning | Stable | Healing | RollingBack
+    ObservedGeneration int64             `json:"observedGeneration,omitempty"`
+    CurrentReplicas   int32              `json:"currentReplicas,omitempty"` // 就绪副本，取自 Deployment
+    DesiredReplicas   int32              `json:"desiredReplicas,omitempty"`
+    LastScalingAt     *metav1.Time       `json:"lastScalingAt,omitempty"`
+    LastHealAction    string             `json:"lastHealAction,omitempty"`
+    LastHealLevel     int                `json:"lastHealLevel,omitempty"` // 0=L1 1=L2 2=L3
+    LastHealAt        *metav1.Time       `json:"lastHealAt,omitempty"`
+    CurrentImage      string             `json:"currentImage,omitempty"`
+    LastImageChangeAt *metav1.Time       `json:"lastImageChangeAt,omitempty"`
+    RollbackRevision  int64              `json:"rollbackRevision,omitempty"`
+    Conditions        []metav1.Condition `json:"conditions,omitempty"`
 }
 ```
+
+两个类型设计上的坑，都是真集群踩出来的：
+
+- **`Scaling`/`Health` 必须是指针**：`omitempty` 对结构体不生效，值类型会把省略的字段序列化成
+  零值对象（`minReplicas: 0`），直接被 CRD 校验拒掉。指针让「未设置」和「设为零值」在序列化层面可区分。
+- **`Replicas` 不能给 CRD 默认值**：CRD 默认值在解码阶段（Mutating Webhook 之前）就落进对象，
+  一旦 `default=1`，webhook 的「replicas 跟随 minReplicas」跨字段默认将永远失效。
+  省略时的兜底：有 webhook → Defaulter 注入；无 webhook → 控制器按 1 处理。
 
 要点：
 - **Status 只记录决策结果与依据**，不记录过程日志（日志交给 Events 和 Prometheus）
@@ -96,14 +112,15 @@ type AppStatus struct {
 
 ```
 Reconcile(App):
-  1. 拉取 App，若被删除则清理（finalizer：导出审计记录后放行删除）
+  1. 拉取 App；删除中则摘 finalizer 放行（审计记录导出是增强方向，未实现）
   2. Webhook 已保证 spec 合法，此处只兜底校验
   3. Ensure Deployment/Service 与 spec 一致（CreateOrUpdate）
-  4. 若处于金丝雀观察窗口：查询错误率 → 超阈值则触发回滚，结束
+  4. 若处于金丝雀观察窗口：查询错误率 → 超阈值则回滚，结束
   5. HealthCheck：采集 Pod 状态 + 应用指标
      - 无异常 → 交给 Scaler 判断是否伸缩（受冷却窗口约束）
      - 有异常 → 交给 Healer 执行分级自愈
-  6. 更新 Status（Phase、CurrentReplicas、Conditions）
+  6. 更新 Status（Phase、CurrentReplicas、Conditions）；若本轮有伸缩决策，
+     先 patch status.lastScalingAt，再 patch spec.replicas（顺序见 4.2）
 ```
 
 ### 4.2 伸缩决策（scaler 包）
@@ -117,41 +134,68 @@ desired = max(各信号 desired, minReplicas)，且 ≤ maxReplicas
 
 防震荡三件套：
 1. **冷却窗口**：`now - lastScalingAt < cooldownSeconds` 时拒绝任何缩容（扩容允许紧急放行）
-2. **迟滞带**：`|desired - current| < max(1, current × 10%)` 时不动作
-3. **缩容渐进**：缩容每次最多 -20%，扩容可一步到位
+2. **迟滞带（只挡缩容）**：缩容方向上 `current - desired ≤ max(1, current × hysteresisPercent%)` 时不动作；
+   扩容方向直通，不看迟滞带。**对称迟滞是个坑**：突发时 `desired` 只比当前多 1 个副本，被迟滞带吃掉，
+   集群在饱和状态下原地不动（压测 run1 实测：期望 5 实际 4，差 1 ≤ 带 1）。扩容是应急动作，不该被平滑。
+3. **缩容渐进**：缩容每次最多 -scaleDownStepPercent%（默认 20%），扩容可一步到位
+
+写路径的时序约束（压测 run4 抓到的竞态）：**先写 status 的 `lastScalingAt`，再写 spec 的 `replicas`**。
+Apply 写 spec 会立刻触发下一轮 Reconcile，而 informer cache 里可能还没有刚写的 status，冷却窗口被绕过，
+表现为 3→2→1 在一个采样窗口内连跳两步。watch 事件按 resourceVersion 有序送达，先写的 status 必然先到 cache。
 
 ### 4.3 自愈引擎（healer 包）
 
-故障识别 → 分级动作：
+故障识别 → 分级动作（`Inspect` 只读，不做任何写操作）：
 
-| 故障信号 | 识别方式 | L1 扩容 | L2 降级 | L3 回滚 |
-|---|---|---|---|---|
-| CrashLoopBackOff | Pod restartCount 阈值 + State 匹配 | ✅ 分流压力 | ✅ 摘除不健康副本 | ✅ rollbackRevision |
-| OOMKilled | `lastState.terminated.reason` | ✅ 不适用 | — | 视版本而定 |
-| 5xx 错误率飙升 | Prometheus 查询 | ✅ | ✅ | ✅ |
-| P99 突增 | Prometheus 查询 | ✅ | — | — |
+| 故障信号 | 识别方式 | 分级动作 |
+|---|---|---|
+| CrashLoopBackOff | `containerStatuses[].state.waiting.reason` | **L2 摘除重建**——实例本身起不来，扩容只会多几个起不来的实例；冷却期内复发升级 L3 回滚 |
+| OOMKilled | `lastState.terminated.reason`（当前 terminated 也算） | **L1 扩容**——先分摊内存压力 |
+| 重启次数 ≥ `health.restartThreshold`（默认 5） | `restartCount` | **L1**，兜底信号（覆盖其他 waiting reason） |
+| 镜像拉不下来 / 配置错 | 不在 `Inspect` 里判 | 交给 CrashLoop 路径：起不来最终都会落到 CrashLoopBackOff |
+| 5xx 错误率飙升 | Prometheus，**金丝雀窗口内**由控制器判断 | 不走分级，直接 **L3 回滚**（版本坏，扩容和摘除都救不了） |
+| P99 突增 | — | 只作为**伸缩信号**，不参与自愈判定 |
 
-分级原则：**每次 Reconcile 只执行一级动作，观测一个窗口（观察期）后再升级**，避免"扩容+回滚"同时发生导致事故现场被破坏。所有动作 Emit Event（reason 统一前缀 `KubeStasis*`）并写回 Status。
+三条边界要写清楚，它们都是"看起来该有、实际没有"的：
+- **L1 不作用于 CrashLoop**：见上表第一行，这是刻意的方向选择
+- **错误率自愈只在金丝雀窗口内生效**：窗口内 `InCanaryWindow` + `CheckCanary` 命中即回滚；**窗口外根本不查错误率**，
+  它只作为伸缩信号（scaler 的 `ErrorRate`）——避免把业务侧故障误判成版本故障
+- **没有 L2→L1 的回退路径**：升级是单向的，降级靠冷却窗口到期后重新从 L1 开始
+
+分级原则：**每次 Reconcile 只执行一级动作，观测一个观察期（默认 3 分钟）后再升级**，避免"扩容+回滚"同时发生导致事故现场被破坏。L3 选版时用 `Report.BadImages` 排除坏镜像，防止回滚后又滚回坏版本（乒乓回滚）。所有动作 Emit Event（reason 统一前缀 `KubeStasis*`）并写回 Status。
 
 ### 4.4 Admission Webhook
 
-- **Validating**：minReplicas ≤ maxReplicas、镜像必须带 tag（禁 latest 进生产）、目标值格式合法
-- **Defaulting（安全默认值，CKS 落地点）**：自动注入 `resources.limits`、`securityContext`（readOnlyRootFilesystem、runAsNonRoot、drop ALL capabilities）、`seccompProfile: RuntimeDefault`
+- **Mutating**（`mapp.kubestasis.io`）：目前只有一条跨字段默认——`replicas` 未显式给出时跟随
+  `scaling.minReplicas`，而不是恒为 1。否则用户写 `minReplicas: 3` 期望"起步就 3 个"，
+  第一轮却被当 1 个创建、再被伸缩器扩上去，多一次冷启动抖动。
+- **Validating**（`vapp.kubestasis.io`）：禁 `latest`/无 tag 镜像、`minReplicas ≤ maxReplicas`、
+  `replicas` 落在区间内、指标类型不重复且 target 按类型可解析、金丝雀阈值 ∈ (0,1) 且观察窗口 ≥ 30s、
+  `resources.requests ≤ limits`、`env` 不得声明保留变量（`APP_NAME`/`POD_NAMESPACE`，由控制器注入）
+  且不得重名。**聚合报错**一次列全，不让用户改一条撞下一条。
+- **不注入安全上下文**（计划中）：`securityContext`（`readOnlyRootFilesystem`/`runAsNonRoot`/drop ALL）
+  与 `resources` 的默认值**没有**实现，`resources` 是原样透传、不偷加默认值。写在这里是为了不让人
+  误以为已经有一层兜底——目前 Pod 的安全配置由用户自己负责。
 
 ## 5. 测试策略
 
-| 层级 | 工具 | 覆盖内容 |
-|---|---|---|
-| 单元 | go test + fake client | Scaler 决策表、Healer 状态机、Webhook 校验规则 |
-| 集成 | envtest（真实 apiserver + etcd） | Reconcile 全流程、Finalizer、Status 更新 |
-| 混沌 | 本地 kind 集群脚本 | 杀 Pod / 打满内存 / 灌异常流量，验证自愈 |
+| 层级 | 工具 | 覆盖内容 | 现状 |
+|---|---|---|---|
+| 单元 | go test + fake client | Scaler 决策表、Healer 状态机、Webhook 校验规则、mini-Informer | ✅ 113 用例 |
+| 集成 | envtest（真实 apiserver + etcd） | Reconcile 全流程、Finalizer、Status 更新 | ⬜ 计划中——目前靠 kind e2e 顶 |
+| 混沌 | kind 集群脚本（CI） | 杀 Pod / CrashLoop 版本发布 / 金丝雀错误率，验证自愈与回滚 | ✅ 覆盖 P0/P2/P3 |
 
 ## 6. 安全设计（呼应 CKS）
 
 - Operator 自身以 distroless 镜像运行，非 root，只读根文件系统
-- RBAC 最小权限：只请求 `apps`/`kubestasis.io` 相关资源权限，拒绝通配符
-- Webhook TLS 证书由 cert-manager 自动轮换
-- Defaulting Webhook 强制为受管应用注入安全上下文（集群级"兜底防线"思路）
+- RBAC 最小权限：只列点到点的资源——App CRD + `pods`/`pods/status`/`services`/`events`/
+  `deployments`/`replicasets`，无通配符（`*`）、无 `secrets`、无 `nodes`
+- Webhook TLS 证书由 `hack/webhook-certs.sh` 自签（openssl 生成 CA + 带 SAN 的服务端证书，写进
+  Secret 并把 CA 注入 `caBundle`），**不依赖 cert-manager**：目标集群不一定装了它，多一个依赖就多一个
+  装不上的理由。代价是证书轮换要重跑脚本（幂等，会重签并滚动更新），没有 cert-manager 的自动续期
+- Defaulting Webhook 为受管应用注入安全上下文（集群级"兜底防线"）——**计划中，未实现**；当前不注入任何
+  `securityContext`，Operator 自身的安全配置（distroless、非 root、只读根文件系统）在 Deployment 里是硬编码的
+- 镜像供应链：CI 用 cosign keyless 签名并自验，示例策略见 `policies/kyverno-kubestasis.yaml`（验签后才准入）
 
 ## 7. 技术选型
 
@@ -160,6 +204,6 @@ desired = max(各信号 desired, minReplicas)，且 ≤ maxReplicas
 | 脚手架 | kubebuilder v4 | 社区标准，CRD/Webhook/配置一键生成 |
 | Controller | controller-runtime | 事实标准，对接 Informer/WorkQueue |
 | 指标 | Prometheus HTTP API | 生态最广，查询简单 |
-| 测试 | envtest | 无需真实集群即可测 Reconcile |
-| CI | GitHub Actions | lint + test + image build + kind e2e |
-| 部署 | kustomize + Helm 双轨 | 开发用 kustomize，用户用 Helm |
+| 测试 | go test + kind e2e | 单测跑决策表，控制循环回归放真集群（envtest 计划中） |
+| CI | GitHub Actions | gofmt + vet + build + test / kind e2e / 多架构镜像 + cosign 签名 |
+| 部署 | kustomize（Helm Chart 计划中） | 现在只有 kustomize overlay：默认版 + webhook 版 |
