@@ -22,7 +22,7 @@
 | `go build ./...` | ✅ | 通过（Go 1.27.3 本机，module `go 1.22.0`；k8s v0.31.1 / controller-runtime v0.19.0） |
 | `go vet ./...` | ✅ | 无输出 |
 | `gofmt -l` | ✅ | 无未格式化文件 |
-| `go test ./...` | ✅ | **137 个用例**全绿（scaler 59 + controller 16 + healer 24 + webhook 24 + miniinformer 11 + metrics 3，含子测试） |
+| `go test ./...` | ✅ | **137 个用例**全绿（scaler 59 + controller 16 + healer 24 + webhook 24 + miniinformer 11 + metrics 3，含子测试）；另有 `test/envtest/` 4 条控制循环链路在 CI `envtest` job 用真实 apiserver 跑 |
 | 部署链路 | ✅ | Docker Desktop k8s v1.36.1：`kubectl apply` CRD+RBAC+Manager → 控制器 Pod `1/1 Running` |
 | 创建资源 | ✅ | `deployment.apps/sample 2/2`、`service/sample ClusterIP 80/TCP`、`endpoints 10.244.0.9,10.244.0.10` |
 | 状态真实性 | ✅ | `NAME sample PHASE Stable READY 2 DESIRED 2`；`status.conditions` 出现 `Available=True / Progressing=False` |
@@ -60,7 +60,8 @@
 | 缩容稳定窗口 | ✅ 已实现 | `scaling.scaleDownStabilizationSeconds`（默认 60s，0 关闭）+ `status.belowTargetSince`：信号需持续低于目标满窗口才允许缩容，任一信号高于目标的采样立即重置计时。补的是压测 run5 抓到的误缩容缺口（突发起点 4→3→13s 又扩回 5）。真集群验证：3 副本零流量下，窗口期内纹丝不动，到点后**单步** 3→2（不连跳——status 先于 spec 写入的竞态修复同时被验证） |
 | 伸缩决策指标导出 | ✅ 已实现 | `internal/metrics/`：`kubestasis_scaling_decisions_total{namespace,app,action,reason}`（reason 用固定枚举 ReasonCode，不是自由文本——防 label 基数爆炸）+ `desired/current/signal_replicas` 三个 gauge；App 删除时 `Forget` 清理防残留。真集群验证：4 个指标全部出现在 `/metrics` 端点，含一条 `ScaleDown` 决策记录 |
 | Helm Chart | ✅ 已实现 | `charts/kubestasis`（0.1.0）：CRD 放 `crds/`、SA/RBAC/Deployment/metrics Service/webhook 全模板化；webhook 证书二选一——默认 `helm genSelfSignedCert` 渲染期生成（零外部依赖），或 `--set webhook.certManager.enabled=true` 走 cert-manager；`helm lint` + `template` + server-side dry-run + 真集群 `upgrade --install`（p9 镜像）+ 滚动升级全部验证。注意事项与 values 说明见 [charts/kubestasis/README.md](../charts/kubestasis/README.md) |
-| 单元测试 | ✅ 137 用例 | scaler 59 + controller 16 + healer 24 + webhook 24 + miniinformer 11 + metrics 3（用 `--- PASS` 行数按包实测，和 §二 同一口径）。envtest 仍未做——现在的控制循环回归靠 kind e2e |
+| 单元测试 | ✅ 137 用例 | scaler 59 + controller 16 + healer 24 + webhook 24 + miniinformer 11 + metrics 3（用 `--- PASS` 行数按包实测，和 §二 同一口径） |
+| envtest 集成测试 | ✅ 4 条链路 | `test/envtest/`：进程内起真实 etcd + apiserver，验 watch → enqueue → Reconcile → status 回写 的闭环——创建（Deployment/Service/ownerRef/finalizer/DesiredReplicas）、就绪回写（代写 Deployment.status → App Available=True）、删除放闸、副本漂移拉回。CI 有独立 `envtest` job；本地无二进制时自动 Skip（`KUBESTASIS_REQUIRE_ENVTEST=1` 强制失败） |
 | 压测与 HPA 对比表 | ✅ 已完成 | 2026-11-04：同镜像/同资源/同流量下 vs 原生 HPA（CPU 50%）的对照实验，5 秒粒度采样入库 `docs/benchmark/data.csv`，报告见 [docs/benchmark/hpa-vs-kubestasis.md](benchmark/hpa-vs-kubestasis.md)。结论有限定条件，报告里写清了口径与失效风险 |
 
 ## 四、11.02 夜这一轮改了什么（P0 收尾）
@@ -152,6 +153,7 @@
 | 2026-11-03 晚 | P3 Webhook + P4 mini-Informer + 评审三连修复（冲突写路径/魔法数字可配/CI 覆盖 P2）+ AI 推理信号 + cosign/Kyverno + 更名 KubeStasis | 57 → 103 用例；P0–P4 全闭环；真集群复现并修掉两个新坑（见下） |
 | 2026-11-04 | 对照压测（HPA vs KubeStasis）+ CRD resources/env 透传 + webhook 校验配套 | 五轮压测，前四轮全部被自己推翻（详见压测报告）；修复渐进缩容跨步竞态（status 先于 spec 写入）；报告与原始 CSV 入库；103 → 113 用例 |
 | 2026-11-04 晚 | 就绪/存活探针 + 缩容稳定窗口 + Helm Chart + 决策指标导出 | 113 → 137 用例；`Available` 语义修正（有真探针了）；run5 误缩容缺口闭合；`helm upgrade --install` 真集群验证（含滚动升级 p8→p9）；踩到"kustomize 与 Helm 双装导致两套 webhook 打架"的坑（见下） |
+| 2026-11-04 深夜 | envtest 控制循环回归落地（原计划第 3 周，提前完成） | 新增 `test/envtest/` 4 条链路 + CI 独立 `envtest` job（5 → 6 job）；P0 最后一个未勾项清零 |
 
 ### 11.03 晚新踩的坑（已修，写进记忆）
 

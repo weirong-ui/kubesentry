@@ -44,7 +44,7 @@ jobs:
           cache: true
       - name: gofmt
         run: |
-          unformatted=$(gofmt -l ./api ./cmd ./internal)
+          unformatted=$(gofmt -l ./api ./cmd ./internal ./pkg ./test)
           if [ -n "$unformatted" ]; then
             echo "以下文件未格式化，请运行 gofmt -w："
             echo "$unformatted"
@@ -61,6 +61,27 @@ jobs:
         continue-on-error: true
         with:
           files: coverage.out
+
+  # 控制循环级集成测试：进程内起真实 etcd + kube-apiserver，
+  # 验 watch → enqueue → Reconcile → status 回写 的完整闭环（创建/漂移/删除/就绪）。
+  # KUBESTASIS_REQUIRE_ENVTEST=1：二进制装不上必须红，不允许静默跳绿。
+  envtest:
+    name: envtest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+      - name: 安装 envtest 二进制（K8s 1.31.x，对齐 go.mod 的 client-go 0.31）
+        run: |
+          go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.19
+          echo "KUBEBUILDER_ASSETS=$(setup-envtest use 1.31.x -p path)" >> "$GITHUB_ENV"
+      - name: go test ./test/envtest
+        env:
+          KUBESTASIS_REQUIRE_ENVTEST: "1"
+        run: go test ./test/envtest/... -v -count=1
 
   e2e:
     name: e2e

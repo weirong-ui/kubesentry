@@ -39,9 +39,14 @@ run: ## 本地运行（连当前 kubeconfig）
 	$(GO) run ./cmd
 
 ##@ Test
-test: manifests generate fmt ## 单元 + envtest 集成测试
+test: manifests generate fmt ## 单元测试（envtest 无二进制时自动跳过）
 	$(GO) test ./... -coverprofile=coverage.out -covermode=atomic
 	$(GO) tool cover -func=coverage.out | tail -1
+
+test-envtest: ## 控制循环级集成测试（需 setup-envtest 下载的二进制）
+	$(GO) run sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.19 use 1.31.x -p path > .envtest-path
+	KUBESTASIS_REQUIRE_ENVTEST=1 KUBEBUILDER_ASSETS=$$(cat .envtest-path) \
+		$(GO) test ./test/envtest/... -v -count=1
 
 ##@ Build
 build: ## 编译二进制

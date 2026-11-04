@@ -7,7 +7,7 @@
 - [x] Reconcile 循环：App → Deployment/Service 的 CreateOrUpdate
 - [x] Status 反映真实就绪副本 + Available/Progressing Conditions + Events 留痕
 - [x] Finalizer 处理删除逻辑
-- [ ] envtest 集成测试跑通第一个用例（顺延到第 3 周）
+- [x] envtest 集成测试跑通（2026-11-04 晚，提前于原计划第 3 周）：`test/envtest/` 4 条链路——创建闭环（Deployment/Service/ownerRef/finalizer/status）、就绪状态回写、删除放闸、副本漂移拉回
 - [x] GitHub Actions：gofmt + go vet + go build + go test + kind e2e
 - 📦 产出：GitHub 仓库可运行、掘金文章《从零写一个 K8s Operator》
 
@@ -54,6 +54,7 @@
 | 2026.11.02–03 | P0–P4 全部闭环（进度大幅提前） | 简历一次到位：弹性伸缩 + 自愈 + 准入控制 + 手写 Informer |
 | 2026.11.04 | ✅ 压测对比表（[报告](benchmark/hpa-vs-kubestasis.md)，五轮迭代 + 原始 CSV 入库） | 把"比 HPA 怎样"从定性论证变成可复算的证据——包括输的项 |
 | 2026.11.04 晚 | ✅ 探针 / 缩容稳定窗口 / Helm Chart / 决策指标 | v0.1 前的最后四块拼图；`Available` 语义修正、误缩容缺口闭合 |
-| 2026.11–12 | envtest + Grafana 面板 + 系列文章补齐 | 补控制循环级回归与现成面板；系列文章完结 |
+| 2026.11.04 深夜 | ✅ envtest 控制循环回归（`test/envtest/` + CI envtest job） | 补控制循环级回归 |
+| 2026.11–12 | Grafana 面板 + 系列文章补齐 | 出现成面板；系列文章完结 |
 | 2027.01–03 | 掘金系列完结 + 演示视频 | 补充"掘金系列 x N 篇" |
 | 2027.04–05 | 面试题库整理 | 简历定稿，秋招冲刺 |
