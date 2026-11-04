@@ -89,7 +89,7 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "kubestasis.sentry.io",
+		LeaderElectionID:       "kubestasis.io",
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")

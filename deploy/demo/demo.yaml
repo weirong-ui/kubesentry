@@ -119,7 +119,7 @@ spec:
 # 受管应用：KubeStasis 依据 scaledemo 的 QPS 伸缩（每 Pod 目标 100 QPS）。
 # 注意 metadata.name 必须与 demoapp 指标的 app 标签一致（KubeStasis 会注入
 # APP_NAME 环境变量，二者天然对齐）。
-apiVersion: apps.sentry.io/v1alpha1
+apiVersion: kubestasis.io/v1alpha1
 kind: App
 metadata:
   name: scaledemo

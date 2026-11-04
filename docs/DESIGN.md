@@ -30,7 +30,7 @@ KubeStasis 的目标：**用 Operator 模式把"伸缩决策"和"故障自愈"�
 
 ## 3. API 设计
 
-### 3.1 CRD：`App`（Group: `apps.sentry.io`，Version: `v1alpha1`）
+### 3.1 CRD：`App`（Group: `kubestasis.io`，Version: `v1alpha1`）
 
 ```go
 type AppSpec struct {
@@ -149,7 +149,7 @@ desired = max(各信号 desired, minReplicas)，且 ≤ maxReplicas
 ## 6. 安全设计（呼应 CKS）
 
 - Operator 自身以 distroless 镜像运行，非 root，只读根文件系统
-- RBAC 最小权限：只请求 `apps`/`apps.sentry.io` 相关资源权限，拒绝通配符
+- RBAC 最小权限：只请求 `apps`/`kubestasis.io` 相关资源权限，拒绝通配符
 - Webhook TLS 证书由 cert-manager 自动轮换
 - Defaulting Webhook 强制为受管应用注入安全上下文（集群级"兜底防线"思路）
 

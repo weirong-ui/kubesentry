@@ -23,6 +23,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -306,4 +307,86 @@ func containsFinalizer(app *appsv1alpha1.App) bool {
 		}
 	}
 	return false
+}
+
+// TestEnsureDeployment_ResourcesPassthrough spec.resources 必须原样落到托管
+// Deployment；省略时不能凭空塞默认值（资源预算由使用者决定，控制器不猜）。
+func TestEnsureDeployment_ResourcesPassthrough(t *testing.T) {
+	ctx := context.Background()
+	app := newTestApp("sample", 2)
+
+	// ① 省略：Pod 保持 BestEffort（Resources 零值）
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(app).Build()
+	deploy, err := newTestReconciler(c).ensureDeployment(ctx, app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := deploy.Spec.Template.Spec.Containers[0].Resources
+	if len(got.Requests) != 0 || len(got.Limits) != 0 {
+		t.Fatalf("resources must stay empty when omitted, got %+v", got)
+	}
+
+	// ② 声明：requests/limits 逐项对齐
+	app.Spec.Resources = &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("250m"),
+			corev1.ResourceMemory: resource.MustParse("64Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("500m"),
+			corev1.ResourceMemory: resource.MustParse("128Mi"),
+		},
+	}
+	deploy2, err := newTestReconciler(c).ensureDeployment(ctx, app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = deploy2.Spec.Template.Spec.Containers[0].Resources
+	if got.Requests.Cpu().String() != "250m" || got.Limits.Cpu().String() != "500m" {
+		t.Fatalf("cpu resources not passed through: req=%v lim=%v", got.Requests.Cpu(), got.Limits.Cpu())
+	}
+	if got.Limits.Memory().String() != "128Mi" {
+		t.Fatalf("memory limit not passed through: %v", got.Limits.Memory())
+	}
+	// 不能共享指针：改 Deployment 不能反向污染 App 对象
+	deploy2.Spec.Template.Spec.Containers[0].Resources.Requests[corev1.ResourceCPU] = resource.MustParse("1")
+	if app.Spec.Resources.Requests.Cpu().String() != "250m" {
+		t.Fatal("resources must be deep-copied, App mutated through deployment pointer")
+	}
+}
+
+// TestEnsureDeployment_EnvPassthrough 用户 env 原样透传，且 APP_NAME/
+// POD_NAMESPACE 由控制器强制注入、不被用户的同名声明覆盖。
+func TestEnsureDeployment_EnvPassthrough(t *testing.T) {
+	ctx := context.Background()
+	app := newTestApp("sample", 1)
+	app.Spec.Env = []corev1.EnvVar{
+		{Name: "CPU_SPIN_MS", Value: "8"},
+		// 恶意/误配：即便绕过 Webhook 也必须在控制器层被过滤
+		{Name: "APP_NAME", Value: "hijacked"},
+	}
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(app).Build()
+	deploy, err := newTestReconciler(c).ensureDeployment(ctx, app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := deploy.Spec.Template.Spec.Containers[0].Env
+
+	var spin, appName string
+	appNameCount := 0
+	for _, e := range env {
+		switch e.Name {
+		case "CPU_SPIN_MS":
+			spin = e.Value
+		case "APP_NAME":
+			appName = e.Value
+			appNameCount++
+		}
+	}
+	if spin != "8" {
+		t.Errorf("user env not passed through: %+v", env)
+	}
+	if appName != "sample" || appNameCount != 1 {
+		t.Errorf("APP_NAME must be injected exactly once as %q, got %q x%d", "sample", appName, appNameCount)
+	}
 }

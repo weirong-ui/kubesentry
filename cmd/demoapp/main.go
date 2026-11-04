@@ -71,12 +71,22 @@ func main() {
 		fmt.Sscanf(v, "%f", &errorRate)
 	}
 
+	// CPU_SPIN_MS=N 表示每个请求忙等 N 毫秒，让 CPU 消耗与 QPS 成正比。
+	// 压测对比（vs 原生 CPU 型 HPA）需要它：没有真实 CPU 负载，HPA 永远不动。
+	cpuSpinMs := 0
+	if v := os.Getenv("CPU_SPIN_MS"); v != "" {
+		fmt.Sscanf(v, "%d", &cpuSpinMs)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if errorRate > 0 && rand.Float64() < errorRate {
 			requests5xx.Add(1)
 			http.Error(w, "injected failure", http.StatusInternalServerError)
 			return
+		}
+		if cpuSpinMs > 0 {
+			busySpin(time.Duration(cpuSpinMs) * time.Millisecond)
 		}
 		requestsOK.Add(1)
 		fmt.Fprintf(w, "ok from %s/%s\n", namespace, appName)
@@ -96,11 +106,24 @@ func main() {
 			appName, namespace, requests5xx.Load())
 	})
 
-	fmt.Printf("demoapp listening on %s (app=%s namespace=%s errorRate=%.2f)\n", *listen, appName, namespace, errorRate)
+	fmt.Printf("demoapp listening on %s (app=%s namespace=%s errorRate=%.2f cpuSpinMs=%d)\n",
+		*listen, appName, namespace, errorRate, cpuSpinMs)
 	if err := http.ListenAndServe(*listen, mux); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// busySpin 让当前 goroutine 忙等 d。编译器不会优化掉它：结果写进全局计数器。
+var spinSink atomic.Int64
+
+func busySpin(d time.Duration) {
+	deadline := time.Now().Add(d)
+	n := int64(0)
+	for time.Now().Before(deadline) {
+		n++
+	}
+	spinSink.Add(n)
 }
 
 // runLoadgen 以固定 QPS 打目标地址。token bucket 简化版：按 tick 发放配额。

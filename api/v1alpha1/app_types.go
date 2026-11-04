@@ -16,7 +16,7 @@ limitations under the License.
 
 // Package v1alpha1 contains API Schema definitions for the apps v1alpha1 API group.
 // +kubebuilder:object:generate=true
-// +groupName=apps.sentry.io
+// +groupName=kubestasis.io
 package v1alpha1
 
 import (
@@ -230,6 +230,21 @@ type AppSpec struct {
 	// Health 健康与自愈策略。可省略：省略时不做自愈。指针原因同上。
 	// +optional
 	Health *HealthPolicy `json:"health,omitempty"`
+
+	// Resources 容器资源声明，透传到托管 Deployment 的 containers[0].resources。
+	// 可省略，但强烈建议声明：省略时 Pod 是 BestEffort QoS，既没有 CPU 上限
+	// （单 Pod 可能吃掉整个节点），也无法参与基于利用率的伸缩。
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// Env 应用环境变量，透传到托管 Pod。
+	// APP_NAME / POD_NAMESPACE 由控制器强制注入（指标标签约定），因此不允许
+	// 在此声明（Webhook 拦截）——否则用户的声明会被静默覆盖，排障时极其费解。
+	// 按 name 做 map 合并：kubectl apply 改单个变量不会把整组 env 冲掉。
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Env []corev1.EnvVar `json:"env,omitempty"`
 }
 
 // AppStatus defines the observed state of App.

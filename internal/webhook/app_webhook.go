@@ -39,6 +39,7 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
@@ -49,8 +50,8 @@ import (
 // path 必须与 controller-runtime 注册时的默认路径一致（/mutate|validate-<group>-<version>-<kind>），
 // 否则 WebhookConfiguration 指向的 URL 在 manager 里不存在，所有 App 的增改都会被拒。
 //
-// +kubebuilder:webhook:path=/mutate-apps-sentry-io-v1alpha1-app,mutating=true,failurePolicy=fail,sideEffects=None,groups=apps.sentry.io,resources=apps,verbs=create;update,versions=v1alpha1,name=mapp.apps.sentry.io,admissionReviewVersions=v1
-// +kubebuilder:webhook:path=/validate-apps-sentry-io-v1alpha1-app,mutating=false,failurePolicy=fail,sideEffects=None,groups=apps.sentry.io,resources=apps,verbs=create;update,versions=v1alpha1,name=vapp.apps.sentry.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/mutate-kubestasis-io-v1alpha1-app,mutating=true,failurePolicy=fail,sideEffects=None,groups=kubestasis.io,resources=apps,verbs=create;update,versions=v1alpha1,name=mapp.kubestasis.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-kubestasis-io-v1alpha1-app,mutating=false,failurePolicy=fail,sideEffects=None,groups=kubestasis.io,resources=apps,verbs=create;update,versions=v1alpha1,name=vapp.kubestasis.io,admissionReviewVersions=v1
 
 // AppDefaulter 注入 schema 默认值表达不了的跨字段默认值。
 type AppDefaulter struct{}
@@ -163,6 +164,44 @@ func validateApp(app *appsv1alpha1.App) (admission.Warnings, error) {
 					h.Canary.ObservationSeconds))
 			}
 		}
+	}
+
+	if r := app.Spec.Resources; r != nil {
+		// 8. requests 不得超过 limits：配置错了 Pod 直接被 apiserver 拒绝，
+		//    但在 App 上只是"一直 Provisioning"，用户看不出根因
+		for _, name := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory} {
+			req, hasReq := r.Requests[name]
+			lim, hasLim := r.Limits[name]
+			if hasReq && hasLim && req.Cmp(lim) > 0 {
+				errs = append(errs, fmt.Sprintf("spec.resources.requests.%s(%s) 不能大于 limits(%s)",
+					name, req.String(), lim.String()))
+			}
+		}
+		// 9. 声明了 CPU request 却没有 limit：BestEffort 式的"软声明"在
+		//    节点压力下最容易被驱逐，且单 Pod 能吃满节点——只警告，不阻断
+		if _, hasReq := r.Requests[corev1.ResourceCPU]; hasReq {
+			if _, hasLim := r.Limits[corev1.ResourceCPU]; !hasLim {
+				warns = append(warns, "spec.resources 声明了 cpu request 但没有 cpu limit：节点压力下该 Pod 可能吃满节点 CPU，也更容易被驱逐")
+			}
+		}
+	}
+
+	// 10. env 的保留变量与重名：APP_NAME/POD_NAMESPACE 由控制器强制注入，
+	//     用户声明会被覆盖（清单看着生效、实际不是），必须准入期拦下
+	envSeen := map[string]bool{}
+	for i, e := range app.Spec.Env {
+		if e.Name == "APP_NAME" || e.Name == "POD_NAMESPACE" {
+			errs = append(errs, fmt.Sprintf("spec.env[%d]: %q 是保留变量（由控制器注入，用于指标标签对齐）", i, e.Name))
+			continue
+		}
+		if e.Name == "" {
+			errs = append(errs, fmt.Sprintf("spec.env[%d]: name 不能为空", i))
+			continue
+		}
+		if envSeen[e.Name] {
+			errs = append(errs, fmt.Sprintf("spec.env[%d]: 变量 %q 重复", i, e.Name))
+		}
+		envSeen[e.Name] = true
 	}
 
 	if len(errs) > 0 {

@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -40,7 +41,7 @@ import (
 )
 
 const (
-	appFinalizer = "apps.sentry.io/finalizer"
+	appFinalizer = "kubestasis.io/finalizer"
 
 	// 托管资源统一标签，便于 `kubectl get deploy,svc -l app.kubernetes.io/managed-by=kubestasis`.
 	labelManagedBy = "app.kubernetes.io/managed-by"
@@ -72,9 +73,9 @@ type AppReconciler struct {
 	Recorder record.EventRecorder
 }
 
-// +kubebuilder:rbac:groups=apps.sentry.io,resources=apps,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=apps.sentry.io,resources=apps/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=apps.sentry.io,resources=apps/finalizers,verbs=update
+// +kubebuilder:rbac:groups=kubestasis.io,resources=apps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=kubestasis.io,resources=apps/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=kubestasis.io,resources=apps/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=services;events;pods,verbs=get;list;watch;create;update;patch;delete
@@ -191,6 +192,17 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 	decision := r.Scaler.Decide(ctx, &app, time.Now)
 	if decision.Action != scaler.ActionNone {
+		// 冷却起点必须先于 spec 写入落地：spec patch 会立刻触发下一轮 Reconcile，
+		// 若那一刻 cache 里的 status 还没带上 LastScalingAt，冷却窗口形同虚设——
+		// 压测 run4 抓到 3→2→1 在一个采样窗口内连跳两步（docs/benchmark/）。
+		// watch 事件按 resourceVersion 有序送达，先写 status 就能保证后续任何
+		// Reconcile 读到的都是"已开冷却"的对象。
+		now := metav1.Now()
+		app.Status.LastScalingAt = &now
+		if err := r.Status().Patch(ctx, &app, client.RawPatch(types.MergePatchType,
+			[]byte(`{"status":{"lastScalingAt":"`+now.UTC().Format(time.RFC3339)+`"}}`))); err != nil {
+			return r.failOn(ctx, &app, "scale", fmt.Errorf("pre-write lastScalingAt: %w", err))
+		}
 		if err := r.Scaler.Apply(ctx, r.Client, &app, decision); err != nil {
 			return r.failOn(ctx, &app, "scale", err)
 		}
@@ -225,14 +237,17 @@ func (r *AppReconciler) ensureDeployment(ctx context.Context, app *appsv1alpha1.
 			Name:  app.Name,
 			Image: app.Spec.Image,
 			Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: appPort(app), Protocol: corev1.ProtocolTCP}},
-			// 注入身份环境变量：应用打指标标签（app=/namespace=）时直接用，
-			// 与 PrometheusSource 的 PromQL 模板（{app}/{namespace}）约定一致。
-			Env: []corev1.EnvVar{
-				{Name: "APP_NAME", Value: app.Name},
-				{Name: "POD_NAMESPACE", ValueFrom: &corev1.EnvVarSource{
+			// 资源声明透传：省略时保持 nil（BestEffort），声明了就严格照抄，
+			// 不在控制器里偷偷加默认值——资源预算必须由使用者显式决定。
+			Resources: resourcesOf(app),
+			// 身份环境变量必须最后追加且不可被覆盖：PrometheusSource 的 PromQL
+			// 依赖 {app}/{namespace} 标签与 App 名、命名空间一致。
+			Env: append(userEnv(app),
+				corev1.EnvVar{Name: "APP_NAME", Value: app.Name},
+				corev1.EnvVar{Name: "POD_NAMESPACE", ValueFrom: &corev1.EnvVarSource{
 					FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
 				}},
-			},
+			),
 		}}
 		return controllerutil.SetControllerReference(app, want, r.Scheme)
 	})
@@ -428,6 +443,29 @@ func appPort(app *appsv1alpha1.App) int32 {
 		return 8080
 	}
 	return app.Spec.Port
+}
+
+// resourcesOf 返回 spec.resources 的深拷贝，避免控制器把指针共享给
+// 多个对象的 PodTemplate（后续改动会连带污染缓存里的 App 对象）。
+func resourcesOf(app *appsv1alpha1.App) corev1.ResourceRequirements {
+	if app.Spec.Resources == nil {
+		return corev1.ResourceRequirements{}
+	}
+	return *app.Spec.Resources.DeepCopy()
+}
+
+// userEnv 过滤掉保留变量后返回用户声明的 env 副本。
+// 保留变量由控制器强制注入，用户声明同名变量在 Webhook 已拦截；
+// 这里再过滤一次，保证绕过 Webhook 创建的旧对象也不会出现重复变量。
+func userEnv(app *appsv1alpha1.App) []corev1.EnvVar {
+	out := make([]corev1.EnvVar, 0, len(app.Spec.Env))
+	for _, e := range app.Spec.Env {
+		if e.Name == "APP_NAME" || e.Name == "POD_NAMESPACE" {
+			continue
+		}
+		out = append(out, *e.DeepCopy())
+	}
+	return out
 }
 
 // SetupWithManager sets up the controller with the Manager.

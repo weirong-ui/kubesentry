@@ -1,4 +1,4 @@
-apiVersion: apps.sentry.io/v1alpha1
+apiVersion: kubestasis.io/v1alpha1
 kind: App
 metadata:
   name: sample

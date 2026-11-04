@@ -29,7 +29,7 @@ kubestasis/
 
 ```bash
 # 1. 用 kubebuilder 生成标准脚手架
-kubebuilder init --domain sentry.io --repo github.com/weirong-ui/kubestasis
+kubebuilder init --domain kubestasis.io --repo github.com/weirong-ui/kubestasis
 kubebuilder create api --group apps --version v1alpha1 --kind App --resource --controller
 
 # 2. 用我给你的文件覆盖对应位置：

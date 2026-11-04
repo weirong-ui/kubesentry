@@ -125,9 +125,12 @@ func TestDecide_HysteresisBand(t *testing.T) {
 		want    Action
 		wantTo  int32
 	}{
-		{"差值在带内不动作 current=10±1", 10, 11, ActionNone, 10},
+		// 迟滞带只挡缩容：扩容差 1 也直通（压测实证，见 Decide 注释）
+		{"扩容差 1 直通（迟滞带不抑制扩容）", 10, 11, ActionScaleUp, 11},
+		{"扩容差 1 在小副本数上同样直通", 3, 4, ActionScaleUp, 4},
+		{"缩容差 1 在带内不动作", 10, 9, ActionNone, 10},
+		{"小副本数缩容差 1 也在带内", 4, 3, ActionNone, 4},
 		{"差值超带上沿则扩容", 10, 12, ActionScaleUp, 12},
-		{"小副本数带宽至少为 1：current=3 信号 4 在带内", 3, 4, ActionNone, 3},
 		{"小副本数信号 5 超带扩容", 3, 5, ActionScaleUp, 5},
 		{"回落 minReplicas 不受迟滞约束", 3, 2, ActionScaleDown, 2},
 	}

@@ -21,6 +21,8 @@ import (
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	appsv1alpha1 "github.com/weirong-ui/kubestasis/api/v1alpha1"
@@ -223,5 +225,76 @@ func TestValidate_AggregatesAllErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "latest") || !strings.Contains(err.Error(), "minReplicas") {
 		t.Fatalf("error should aggregate both problems, got: %v", err)
+	}
+}
+
+// ---------- spec.resources ----------
+
+func TestValidate_ResourcesRequestsExceedLimits(t *testing.T) {
+	app := validApp()
+	app.Spec.Resources = &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
+		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("500m")},
+	}
+	_, err := validateApp(app)
+	if err == nil || !strings.Contains(err.Error(), "不能大于 limits") {
+		t.Fatalf("requests>limits must be rejected, got %v", err)
+	}
+}
+
+func TestValidate_ResourcesCPURequestWithoutLimitWarns(t *testing.T) {
+	app := validApp()
+	app.Spec.Resources = &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("250m")},
+	}
+	warns, err := validateApp(app)
+	if err != nil {
+		t.Fatalf("request-only resources must pass with warning, got %v", err)
+	}
+	if len(warns) == 0 || !strings.Contains(strings.Join(warns, ";"), "cpu limit") {
+		t.Fatalf("expected cpu-limit warning, got %v", warns)
+	}
+}
+
+func TestValidate_ResourcesValidPasses(t *testing.T) {
+	app := validApp()
+	app.Spec.Resources = &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("250m"),
+			corev1.ResourceMemory: resource.MustParse("64Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("500m"),
+			corev1.ResourceMemory: resource.MustParse("128Mi"),
+		},
+	}
+	if warns, err := validateApp(app); err != nil {
+		t.Fatalf("valid resources rejected: %v (warns %v)", err, warns)
+	}
+}
+
+func TestValidate_RejectsReservedEnvName(t *testing.T) {
+	app := validApp()
+	app.Spec.Env = []corev1.EnvVar{{Name: "APP_NAME", Value: "hijacked"}}
+	_, err := validateApp(app)
+	if err == nil || !strings.Contains(err.Error(), "保留变量") {
+		t.Fatalf("reserved env must be rejected, got %v", err)
+	}
+}
+
+func TestValidate_RejectsDuplicateEnv(t *testing.T) {
+	app := validApp()
+	app.Spec.Env = []corev1.EnvVar{{Name: "FOO", Value: "1"}, {Name: "FOO", Value: "2"}}
+	_, err := validateApp(app)
+	if err == nil || !strings.Contains(err.Error(), "重复") {
+		t.Fatalf("duplicate env must be rejected, got %v", err)
+	}
+}
+
+func TestValidate_UserEnvPasses(t *testing.T) {
+	app := validApp()
+	app.Spec.Env = []corev1.EnvVar{{Name: "CPU_SPIN_MS", Value: "8"}}
+	if _, err := validateApp(app); err != nil {
+		t.Fatalf("user env rejected: %v", err)
 	}
 }

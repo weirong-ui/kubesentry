@@ -24,7 +24,7 @@ import (
 
 var (
 	// GroupVersion 是本 API 组的唯一版本入口，CRD / RBAC 生成都依赖它。
-	GroupVersion = schema.GroupVersion{Group: "apps.sentry.io", Version: "v1alpha1"}
+	GroupVersion = schema.GroupVersion{Group: "kubestasis.io", Version: "v1alpha1"}
 
 	// SchemeBuilder 收集需要在 Scheme 中注册的类型。
 	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion}

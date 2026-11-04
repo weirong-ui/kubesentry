@@ -94,7 +94,7 @@ jobs:
         run: |
           set -e
           cat > /tmp/bad-app.yaml <<'EOF'
-          apiVersion: apps.sentry.io/v1alpha1
+          apiVersion: kubestasis.io/v1alpha1
           kind: App
           metadata:
             name: bad-latest
@@ -120,7 +120,7 @@ jobs:
         run: |
           set -e
           cat > /tmp/defaulted-app.yaml <<'EOF'
-          apiVersion: apps.sentry.io/v1alpha1
+          apiVersion: kubestasis.io/v1alpha1
           kind: App
           metadata:
             name: defaulted
@@ -154,7 +154,7 @@ jobs:
         run: |
           set -e
           cat > /tmp/heal-demo.yaml <<'EOF'
-          apiVersion: apps.sentry.io/v1alpha1
+          apiVersion: kubestasis.io/v1alpha1
           kind: App
           metadata:
             name: heal-demo

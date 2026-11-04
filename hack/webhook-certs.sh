@@ -15,7 +15,9 @@ SECRET="${2:-webhook-server-cert}"
 SVC="${3:-kubestasis-webhook-service}"
 
 TMP="$(mktemp -d)"
-trap 'rm -rf "${TMP}"' EXIT
+# 清理失败不能影响脚本退出码：某些环境（Git Bash + 安全删除钩子）会拦 rm -rf，
+# 证书已经写进 Secret，临时文件删不掉只是留下垃圾，不该让整个部署链失败。
+trap 'rm -rf "${TMP}" >/dev/null 2>&1 || true' EXIT
 
 echo "==> 生成 CA 与服务端证书（CN=${SVC}.${NS}.svc）"
 openssl req -x509 -newkey rsa:2048 -nodes \

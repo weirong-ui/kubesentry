@@ -134,13 +134,19 @@ func (e *Engine) Decide(ctx context.Context, app *appsv1alpha1.App, nowFn func()
 		desired = policy.MaxReplicas
 	}
 
-	// 迟滞带：差值太小不动（比例 CRD 可配，默认 10%）
+	// 迟滞带：**只抑制缩容**，扩容永远直通。
+	//
+	// 这条不对称是压测逼出来的（2026-11-04，docs/benchmark/）：
+	// 对称迟滞带在 current=4、desired=5 时把扩容也挡住了——差 1 落在带内，
+	// 于是突发流量下少一个副本（约 62 QPS 承载），2 分钟多出几百个失败请求。
+	// 而震荡的根源从来不是"该扩的时候扩了"，而是"刚扩完就缩"。
+	// 所以死区只该出现在收缩方向：扩要快（保可用性），缩要稳（保稳定）。
 	hysteresis := int32(math.Max(1, float64(current)*float64(policy.Hysteresis())/100))
-	withinBand := desired-current <= hysteresis && current-desired <= hysteresis
 	// 例外：回落到 minReplicas 不受迟滞带约束，否则 3 副本时永远缩不回 2
 	backToMin := desired == policy.MinReplicas && current > policy.MinReplicas
-	if withinBand && !backToMin {
-		return Decision{Action: ActionNone, FromReplicas: current, ToReplicas: current, Signals: signals}
+	if desired < current && current-desired <= hysteresis && !backToMin {
+		return Decision{Action: ActionNone, FromReplicas: current, ToReplicas: current,
+			Reason: "scale-down within hysteresis band", Signals: signals}
 	}
 
 	// 冷却窗口：冷却期内拒绝缩容（扩容放行）

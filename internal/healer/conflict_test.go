@@ -50,7 +50,7 @@ func conflictOnce() (interceptor.Funcs, *int) {
 			if _, isApp := obj.(*appsv1alpha1.App); isApp && *calls == 0 {
 				*calls++
 				return apierrors.NewConflict(
-					schema.GroupResource{Group: "apps.sentry.io", Resource: "apps"},
+					schema.GroupResource{Group: "kubestasis.io", Resource: "apps"},
 					obj.GetName(), fmt.Errorf("the object has been modified"))
 			}
 			return c.Patch(ctx, obj, patch, opts...)

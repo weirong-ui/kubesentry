@@ -65,14 +65,23 @@ func TestDecide_CustomScaleDownStep(t *testing.T) {
 }
 
 func TestDecide_CustomHysteresis(t *testing.T) {
-	// hysteresisPercent=50：current=10 时带宽为 5，desired=14 与 10 差 4 → 不动作
+	// hysteresisPercent=50：current=10 时带宽为 5。
+	// 缩容 desired=6（差 4）落在带内 → 不动作；扩容 desired=14（差 4）必须直通。
 	app := newApp(10, 1, 20, 0, appsv1alpha1.MetricTarget{Type: appsv1alpha1.MetricQPS, Target: "100"})
 	app.Spec.Scaling.HysteresisPercent = 50
-	d := NewEngine().WithMetricsSource(fakeSource{vals: map[appsv1alpha1.MetricType]fakeVal{
+
+	down := NewEngine().WithMetricsSource(fakeSource{vals: map[appsv1alpha1.MetricType]fakeVal{
+		appsv1alpha1.MetricQPS: {6, true},
+	}}).Decide(context.Background(), app, func() time.Time { return frozen })
+	if down.Action != ActionNone {
+		t.Fatalf("scale-down diff 4 within 50%% band, want None, got %v -> %d", down.Action, down.ToReplicas)
+	}
+
+	up := NewEngine().WithMetricsSource(fakeSource{vals: map[appsv1alpha1.MetricType]fakeVal{
 		appsv1alpha1.MetricQPS: {14, true},
 	}}).Decide(context.Background(), app, func() time.Time { return frozen })
-	if d.Action != ActionNone {
-		t.Fatalf("diff 4 within 50%% band of 10, want None, got %v -> %d", d.Action, d.ToReplicas)
+	if up.Action != ActionScaleUp || up.ToReplicas != 14 {
+		t.Fatalf("scale-up must bypass hysteresis band, want ScaleUp->14, got %v -> %d", up.Action, up.ToReplicas)
 	}
 }
 
@@ -100,7 +109,7 @@ func TestApply_RetriesOnConflict(t *testing.T) {
 				if calls == 0 {
 					calls++
 					return apierrors.NewConflict(
-						schema.GroupResource{Group: "apps.sentry.io", Resource: "apps"},
+						schema.GroupResource{Group: "kubestasis.io", Resource: "apps"},
 						obj.GetName(), fmt.Errorf("the object has been modified"))
 				}
 				return cl.Patch(ctx, obj, patch, opts...)
