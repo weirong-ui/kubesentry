@@ -42,7 +42,8 @@ def collect_counts() -> tuple[int | None, list[tuple[str, int, int, str]]]:
     badge = None
     claims: list[tuple[str, int, int, str]] = []
     for md in sorted(ROOT.rglob("*.md")):
-        if any(part in {".git", "vendor", "node_modules"} for part in md.parts):
+        # juejin/ 是已对外发布的稿件快照，数字属于"发表时的事实"，不回改
+        if any(part in {".git", "vendor", "node_modules", "juejin"} for part in md.parts):
             continue
         for i, line in enumerate(md.read_text(encoding="utf-8").splitlines(), 1):
             b = BADGE.search(line)
