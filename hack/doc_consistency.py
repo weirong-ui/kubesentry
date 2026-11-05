@@ -29,7 +29,13 @@ def rel(p: pathlib.Path) -> str:
 
 BADGE = re.compile(r"tests-(\d+)%20cases")
 # "139 用例" / "**139 个用例**" / "139 cases"
-CLAIM = re.compile(r"(\d+)\s*(?:个\s*)?用例|(\d+)\s+cases")
+# 2026-11-05 外部评审指出的漏网写法："100 个单元测试用例"——数字和"用例"之间
+# 隔着"个单元测试"，旧正则只允许一个"个"，直接放过。单独加一支收口。
+CLAIM = re.compile(
+    r"(\d+)\s*个\s*(?:单元|集成)?测试用例"      # 100 个单元测试用例
+    r"|(\d+)\s*(?:个\s*)?用例"                  # 139 用例 / 139 个用例
+    r"|(\d+)\s+cases"                            # 139 cases
+)
 ARROW_HISTORY = re.compile(r"\d+\s*(?:个\s*)?用例?\s*→|\d+\s*→\s*\d+")
 
 
@@ -52,7 +58,7 @@ def collect_counts() -> tuple[int | None, list[tuple[str, int, int, str]]]:
             for m in CLAIM.finditer(line):
                 if is_history(line):
                     continue
-                n = int(m.group(1) or m.group(2))
+                n = int(m.group(1) or m.group(2) or m.group(3))
                 # 压测段落里会出现 "137m"、时间之类的数字，先靠上面正则收窄；
                 # 小于 20 的数字基本不是用例总数（如"4 条链路"）
                 if n >= 20:

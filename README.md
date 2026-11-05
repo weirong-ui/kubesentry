@@ -89,12 +89,14 @@ HPA 用 CPU 50%（全默认行为），KubeStasis 用 QPS 16/Pod（默认迟滞 
 <!-- BENCH_TABLE -->
 | 指标 | 原生 HPA | KubeStasis |
 |---|---|---|
-| 突发#1 扩容响应 | 40s | **23s** |
+| 突发#1 扩容响应* | 40s | 23s |
 | 空闲#1 结束时副本数 | 5 | **4** |
 | 全程副本-分钟 | 72.8 | **63.7**（-12.5%） |
 | 空闲后回到 1 副本 | **385s** | 450s（渐进缩容的代价） |
 
 这张表只挑了能说明问题的四行，完整的（含输掉的那几项：突发#2 起点的一次误缩容、失败请求 99 vs 33、五轮废数据的归档）在报告里。
+
+\* 扩容响应为**单次观察（n=1）**，未过重复实验判定线，只作定性参考；值不加粗，是因为它还没有重复校核背书。重复实验的判定线已[预注册](docs/benchmark/pre-registration.md)，跑完会回来改这张表。
 
 口径、原始 CSV、复现脚本：[docs/benchmark/hpa-vs-kubestasis.md](docs/benchmark/hpa-vs-kubestasis.md)
 
@@ -124,7 +126,7 @@ kubectl get events --field-selector reason=KubeStasisScaleUp
 不带 Webhook 用 `make deploy`；Windows 无 `make` 时用等价命令：`kubectl kustomize config/webhook-enabled | sed 's|IMG_PLACEHOLDER|kubestasis:dev|g' | kubectl apply -f -`。
 伸缩需要 `--prometheus-url` 指向可用的 Prometheus（不配则伸缩休眠，其余功能不受影响）。
 
-### 用 Helm 装（生产形态）
+### 用 Helm 装（完整安装形态）
 
 ```bash
 helm upgrade --install kubestasis charts/kubestasis -n kubestasis-system --create-namespace \
@@ -171,11 +173,14 @@ internal/scaler      伸缩决策（多信号取 max，决策与执行分离）
 internal/healer      分级自愈 + 金丝雀回滚
 internal/webhook     Validating + Mutating
 pkg/miniinformer     手写 ListWatch/DeltaFIFO/Store/WorkQueue（学习模块，[原理](pkg/miniinformer/README.md)）
+test/envtest/        envtest 集成测试：真实 apiserver + etcd 的控制循环回归（4 条链路）
 deploy/              demoapp 镜像、demo 与 benchmark 清单
 policies/            Kyverno 集群级镜像信任策略（可选）
 config/              CRD / RBAC / manager / webhook / kustomize overlay / samples
-hack/                webhook-certs.sh、benchmark.sh
+hack/                webhook-certs.sh、benchmark.sh、方差预检与文档一致性检查
 docs/                STATUS 账本、demo 实录、压测报告、系列文章素材
+juejin/              已发布稿件快照（发表时的事实，不回改数字）
+HOW-TO-START.md      从这套材料起步的步骤说明
 ```
 
 ## 开发
