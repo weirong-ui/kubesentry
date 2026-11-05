@@ -75,6 +75,10 @@ REALITY = [
     ("test/envtest", "docs/DESIGN.md", r"envtest[^\n]{0,120}(计划中|未实现|未做|⬜)"),
     ("deploy/monitoring/grafana", "docs/STATUS.md", r"Grafana 面板[^\n]{0,60}(未做|计划中|仍未)"),
     ("charts/kubestasis", "docs/ROADMAP.md", r"Helm Chart[^\n]{0,60}未"),
+    # README 也写过同一类过期话（2026-11-05：Roadmap 节把已入库的 envtest/Grafana 标"未完成"），
+    # "未完成/计划中"可能写在名词前面，两个方向都要查
+    ("test/envtest", "README.md", r"(未完成|计划中|未做)[^\n]{0,120}envtest|envtest[^\n]{0,120}(未完成|计划中|未做)"),
+    ("deploy/monitoring/grafana", "README.md", r"(未完成|计划中|未做|仍未)[^\n]{0,120}Grafana|Grafana[^\n]{0,120}(未完成|计划中|未做|仍未)"),
 ]
 
 for artifact, doc, pattern in REALITY:

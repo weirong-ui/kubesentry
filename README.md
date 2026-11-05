@@ -15,7 +15,7 @@
 |---|---|
 | 按 QPS 伸缩 | [500 QPS 打流 → 1→5 副本；停流后渐进缩回 1](docs/demo/01-scaling.md)（集群内真 Prometheus 按 Pod 抓取） |
 | 分级自愈 | [crash 版本发布 → L2 摘除 → L3 按 ReplicaSet 回滚](docs/demo/02-self-healing.md)（CI 里有同链路回归断言） |
-| vs 原生 HPA | [同镜像、同资源、同流量时间线的压测对比](docs/benchmark/hpa-vs-kubestasis.md)（副本-分钟 −12.5%，经三轮准重复校核约 6σ；扩容响应单次观察 23s vs 40s，方差未补齐、只作定性参考——[方差预检](docs/benchmark/variance-precheck.md)；输的两项也写在里面；原始 CSV 可复算） |
+| vs 原生 HPA | [同镜像、同资源、同流量时间线的压测对比](docs/benchmark/hpa-vs-kubestasis.md)（副本-分钟 −12.5%，经三轮准重复校核约 6σ；扩容响应单次观察 23s vs 40s，方差未补齐、只作定性参考——[方差预检](docs/benchmark/variance-precheck.md)；重复实验协议已[预注册](docs/benchmark/pre-registration.md)；输的两项也写在里面；原始 CSV 可复算） |
 | 可观测性 | [Grafana 面板实测截图](deploy/monitoring/README.md)——4 行 16 个面板，含一次真实的 2→1→2（稳定窗口挡缩容、到点缩、再扩）；同目录还有录制规则与"伸缩引擎休眠"告警 |
 | 全部能力/限制/踩坑 | [docs/STATUS.md](docs/STATUS.md)（唯一可信账本，含"已知不解决的问题"） |
 
@@ -198,7 +198,8 @@ go test ./... -cover     # 单元测试（139 用例）
 - [x] 压测对比 vs 原生 HPA（[报告](docs/benchmark/hpa-vs-kubestasis.md)）
 - [x] Helm Chart（`helm upgrade --install` 真集群验证，含自签/cert-manager 双证书方案）
 - [x] 伸缩决策指标（`kubestasis_scaling_*` 四个指标 + recording rules）
-- [ ] **未完成**：envtest（现在只有 fake client 单测 + kind e2e）、Grafana 面板入库
+- [x] envtest 集成测试（`test/envtest/` 真实 apiserver 控制循环回归，4 条链路，CI 独立 job）
+- [x] Grafana 面板入库（4 行 16 格 + 录制规则 + 休眠告警，真集群[截图](docs/assets/grafana-dashboard.png)）
 - 远景、不承诺排期：eBPF 采集、多集群
 
 详细的逐条状态、已知坑、不解决的问题：[docs/STATUS.md](docs/STATUS.md)。
