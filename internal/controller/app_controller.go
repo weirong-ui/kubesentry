@@ -195,11 +195,14 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 
 	// 稳定窗口的计时起点可能被本轮决策改写（首次出现缩容候选时置位、
-	// 需求回到目标以上时清零）。先记下旧值，决策后单独 patch ——
-	// updateStatus 里的 MergeFrom 基线取自进入它那一刻，早于这里的修改，
-	// 打不进同一个 patch。
+	// 需求回到目标以上时清零）。Decide 本身不改输入对象，只返回三态建议，
+	// 这里落回 status 再单独 patch —— updateStatus 里的 MergeFrom 基线取自
+	// 进入它那一刻，早于这里的修改，打不进同一个 patch。
 	prevBelowTarget := app.Status.BelowTargetSince
 	decision := r.Scaler.Decide(ctx, &app, time.Now)
+	if decision.BelowTarget.Set {
+		app.Status.BelowTargetSince = decision.BelowTarget.Value
+	}
 
 	// 无论动没动都记录：只统计"动过"的决策，就回答不了"为什么一直没扩"
 	metrics.Record(&app, decision)

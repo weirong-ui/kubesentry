@@ -157,7 +157,8 @@
 | 2026-11-04 晚 | 就绪/存活探针 + 缩容稳定窗口 + Helm Chart + 决策指标导出 | 113 → 137 用例；`Available` 语义修正（有真探针了）；run5 误缩容缺口闭合；`helm upgrade --install` 真集群验证（含滚动升级 p8→p9）；踩到"kustomize 与 Helm 双装导致两套 webhook 打架"的坑（见下） |
 | 2026-11-04 深夜 | envtest 控制循环回归落地（原计划第 3 周，提前完成） | 新增 `test/envtest/` 4 条链路 + CI 独立 `envtest` job（5 → 6 job）；P0 最后一个未勾项清零 |
 | 2026-11-04 深夜 | Grafana 面板 + 录制规则两处真 bug 修复 | 面板 4 行 16 格真集群截出入库；修 `alerts:` 写在 rules 数组外（PrometheusRule schema 会静默剪掉，告警从未生效）、比例规则无序列时显示 No data（改零填充）；chart ServiceMonitor 补 `honorLabels: true`（否则决策指标的 App 命名空间被目标标签覆盖，面板按 App 过滤全空） |
-| 2026-11-05 | 压测报告降级口径 + 方差预检 + 账本回删 + v0.1.0 tag | 报告加版本声明（数据采集于稳定窗口实现前）；"快 1.7 倍"降级为单次观察（HPA 侧三轮准重复 σ≈8.2s，组间差仅 2.1σ），副本-分钟（≈6σ）提为主结论；`variance-precheck.md` + 复算脚本入库；STATUS §七/§八 回删已解决项（Grafana/envtest）、修正两处因果与日期；打 `v0.1.0` |
+| 2026-11-05 | 压测报告降级口径 + 方差预检 + 账本回删 + README 定位段 + v0.1.0 tag | 报告加版本声明（数据采集于稳定窗口实现前）；"快 1.7 倍"降级为单次观察（HPA 侧三轮准重复 σ≈8.2s，组间差仅 2.1σ），副本-分钟（≈6σ）提为主结论；`variance-precheck.md` + 复算脚本入库；STATUS §七/§八 回删已解决项（Grafana/envtest）、修正两处因果与日期；README 新增"什么时候该用/不该用"（承认 KEDA+Rollouts+Kyverno 组合更省事）；打 `v0.1.0` |
+| 2026-11-05 下午 | 决策函数纯化（外部评审第 4 条） | `Decide()` 不再改 `Engine.nowFunc`（删字段，时钟改为调用参数）也不再改 `app.Status.BelowTargetSince`（改为 `Decision.BelowTarget` 三态建议，由控制器落盘）；新增 `TestDecide_DoesNotMutateInput` 与并发用例，把"纯函数可测"的承诺钉成测试 |
 
 ### 11.03 晚新踩的坑（已修，写进记忆）
 

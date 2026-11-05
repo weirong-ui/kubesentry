@@ -22,6 +22,8 @@ package scaler
 
 import (
 	"context"
+	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -60,11 +62,15 @@ func TestStabilization_FirstLowSampleStartsClockAndBlocks(t *testing.T) {
 	if d.ReasonCode != ReasonStabilizing {
 		t.Fatalf("want reason code %q, got %q", ReasonStabilizing, d.ReasonCode)
 	}
-	if app.Status.BelowTargetSince == nil {
-		t.Fatal("belowTargetSince should be recorded as the window start")
+	if !d.BelowTarget.Set || d.BelowTarget.Value == nil {
+		t.Fatal("decision should propose recording the window start")
 	}
-	if !app.Status.BelowTargetSince.Time.Equal(frozen) {
-		t.Fatalf("belowTargetSince = %v, want %v", app.Status.BelowTargetSince.Time, frozen)
+	if !d.BelowTarget.Value.Time.Equal(frozen) {
+		t.Fatalf("belowTargetSince = %v, want %v", d.BelowTarget.Value.Time, frozen)
+	}
+	// 纯函数契约：决策不改输入对象，由控制器落盘
+	if app.Status.BelowTargetSince != nil {
+		t.Fatalf("Decide must not mutate its input, got %v", app.Status.BelowTargetSince)
 	}
 }
 
@@ -76,9 +82,13 @@ func TestStabilization_BlocksUntilWindowElapsed(t *testing.T) {
 	if d.Action != ActionNone || d.ReasonCode != ReasonStabilizing {
 		t.Fatalf("30s into a 60s window must not scale, got %s (%s)", d.Action, d.ReasonCode)
 	}
-	// 计时起点不能被重置：否则每轮都从 0 开始，永远到不了窗口末尾
+	// 计时起点不能被重置：否则每轮都从 0 开始，永远到不了窗口末尾。
+	// 窗口未满时应"不改"，所以建议必须是 Set=false。
+	if d.BelowTarget.Set {
+		t.Fatalf("window not elapsed should leave the start untouched, got %+v", d.BelowTarget)
+	}
 	if !app.Status.BelowTargetSince.Time.Equal(frozen.Add(-30 * time.Second)) {
-		t.Fatalf("clock must keep its original start, got %v", app.Status.BelowTargetSince.Time)
+		t.Fatalf("input must stay untouched, got %v", app.Status.BelowTargetSince.Time)
 	}
 }
 
@@ -102,8 +112,11 @@ func TestStabilization_SignalRecoveryResetsClock(t *testing.T) {
 	if d.Action != ActionScaleUp {
 		t.Fatalf("want ScaleUp, got %s (%s)", d.Action, d.ReasonCode)
 	}
-	if app.Status.BelowTargetSince != nil {
-		t.Fatalf("belowTargetSince must be cleared on recovery, got %v", app.Status.BelowTargetSince.Time)
+	if !d.BelowTarget.Set || d.BelowTarget.Value != nil {
+		t.Fatalf("recovery must propose clearing the start, got %+v", d.BelowTarget)
+	}
+	if app.Status.BelowTargetSince == nil {
+		t.Fatal("Decide must not mutate its input")
 	}
 }
 
@@ -127,9 +140,41 @@ func TestStabilization_HysteresisBandDoesNotStartClock(t *testing.T) {
 	if d.Action != ActionNone || d.ReasonCode != ReasonHysteresis {
 		t.Fatalf("want None/hysteresis, got %s (%s)", d.Action, d.ReasonCode)
 	}
-	if app.Status.BelowTargetSince != nil {
-		t.Fatal("band-internal decision must not leave a window start behind")
+	if !d.BelowTarget.Set || d.BelowTarget.Value != nil {
+		t.Fatalf("band-internal decision must propose clearing the start, got %+v", d.BelowTarget)
 	}
+}
+
+// 纯函数契约（2026-11-05 外部评审指出 Decide 既改 Engine.nowFunc 又改
+// app.Status，与"纯函数可测"的设计自述矛盾，此处把契约钉成测试）：
+// 同一份输入重复决策，不能改动输入对象。
+func TestDecide_DoesNotMutateInput(t *testing.T) {
+	app := withBelowSince(newAppWithWindow(4, 60), frozen.Add(-30*time.Second))
+	before := app.DeepCopy()
+
+	engineWanting(2).Decide(context.Background(), app, func() time.Time { return frozen })
+
+	if !reflect.DeepEqual(app, before) {
+		t.Fatalf("Decide mutated its input:\n before: %+v\n  after: %+v", before, app)
+	}
+}
+
+// Engine 不再持有可变时钟字段：同一实例并发决策不应有共享状态
+// （`go test -race` 下验证）。
+func TestDecide_ConcurrentSafe(t *testing.T) {
+	e := engineWanting(2)
+	app := newAppWithWindow(4, 60)
+	now := func() time.Time { return frozen }
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = e.Decide(context.Background(), app, now)
+		}()
+	}
+	wg.Wait()
 }
 
 // 每条返回路径都必须带 ReasonCode：空字符串会变成 metrics 里一个叫 reason="" 的

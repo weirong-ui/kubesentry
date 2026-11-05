@@ -69,7 +69,28 @@ type Decision struct {
 	ReasonCode string
 	// Signals 各信号独立计算出的期望副本数，方便调试和可视化
 	Signals map[appsv1alpha1.MetricType]int32
+	// BelowTarget 对缩容稳定窗口计时起点的写入建议。
+	//
+	// 存在的原因：Decide 曾直接改 app.Status.BelowTargetSince，这让一个号称
+	// "纯函数可测"的决策函数带了输入副作用——外部代码评审指出过（2026-11-05）。
+	// 现在决策只产出建议，由控制器落盘，Decide 不碰输入对象。
+	BelowTarget BelowTargetUpdate
 }
+
+// BelowTargetUpdate 对 status.belowTargetSince 的写入建议，三态：
+//   - Set=false：不改（本次决策与稳定窗口无关）
+//   - Set=true, Value=nil：清零（需求回到目标以上，或落在迟滞带内）
+//   - Set=true, Value=T：置为计时起点（首次出现缩容候选）
+//
+// 三态是必须的：nil 在 JSON merge patch 里表示"写 null（清零）"，
+// 字段省略才表示"不改"，两者不能用一个 nil 指针表达。
+type BelowTargetUpdate struct {
+	Set   bool
+	Value *metav1.Time
+}
+
+// clearedBelowTarget 是"清零"的简写，语义见 BelowTargetUpdate。
+func clearedBelowTarget() BelowTargetUpdate { return BelowTargetUpdate{Set: true} }
 
 func (d Decision) Describe() string {
 	return fmt.Sprintf("%s: %d -> %d (%s)", d.Action, d.FromReplicas, d.ToReplicas, d.Reason)
@@ -87,16 +108,17 @@ type MetricsSource interface {
 		target appsv1alpha1.MetricTarget, current int32) (replicas int32, ok bool)
 }
 
-// Engine 伸缩决策引擎。只做"决策"，不碰集群——这样 Decision 可以纯函数级单元测试.
+// Engine 伸缩决策引擎。只做"决策"：不碰集群，也不改输入对象——
+// 这样 Decision 可以纯函数级单元测试，并发调用也不需要加锁.
 type Engine struct {
-	// nowFunc 注入时钟，测试时可控制时间推进冷却窗口
-	nowFunc func() time.Time
 	// source 指标来源，P1 接入 Prometheus
 	source MetricsSource
 }
 
+// NewEngine 构造决策引擎。时钟不放在结构体里：每次 Decide 显式传入，
+// 既能按调用控制时间，也不会因为共享字段在并发 Reconcile 下互相覆盖。
 func NewEngine() *Engine {
-	return &Engine{nowFunc: time.Now}
+	return &Engine{}
 }
 
 // WithMetricsSource 注入指标来源（P1）。未注入时伸缩能力保持休眠。
@@ -107,8 +129,12 @@ func (e *Engine) WithMetricsSource(src MetricsSource) *Engine {
 
 // Decide 根据冷却窗口与迟滞规则判断是否伸缩。
 // 注意：指标查询（Prometheus）由上层注入，本方法只负责决策，便于纯逻辑单测。
+//
+// 纯函数约定：不修改 app（包括 status）。对稳定窗口计时起点的写入意图
+// 通过 Decision.BelowTarget 返回，由控制器负责落盘——这样同一份输入
+// 重复调用结果相同，测试也可以直接断言 Decision 而不是"对象被改了"。
 func (e *Engine) Decide(ctx context.Context, app *appsv1alpha1.App, nowFn func() time.Time) Decision {
-	e.nowFunc = nowFn
+	now := nowFn()
 	current := int32(1)
 	if app.Spec.Replicas != nil {
 		current = *app.Spec.Replicas
@@ -164,25 +190,32 @@ func (e *Engine) Decide(ctx context.Context, app *appsv1alpha1.App, nowFn func()
 	backToMin := desired == policy.MinReplicas && current > policy.MinReplicas
 	if desired < current && current-desired <= hysteresis && !backToMin {
 		// 带内不动作 = 需求与供给基本匹配，不算"低谷"，稳定窗口的计时清掉
-		app.Status.BelowTargetSince = nil
 		return Decision{Action: ActionNone, FromReplicas: current, ToReplicas: current,
-			Reason: "scale-down within hysteresis band", ReasonCode: ReasonHysteresis, Signals: signals}
+			Reason: "scale-down within hysteresis band", ReasonCode: ReasonHysteresis,
+			Signals: signals, BelowTarget: clearedBelowTarget()}
 	}
 
 	// 缩容稳定窗口：需求必须连续低于目标够久，才承认低谷是真的。
 	// 计时状态放在 status 里而不是内存里——控制器会重启，内存计时一重启就清零，
 	// 恰好在滚动发布时给出一次"窗口已满"的假信号。
+	var belowTarget BelowTargetUpdate
 	if desired >= current {
-		app.Status.BelowTargetSince = nil
-	} else if msg, ok := e.stabilizeScaleDown(app); !ok {
-		return Decision{Action: ActionNone, FromReplicas: current, ToReplicas: current,
-			Reason: msg, ReasonCode: ReasonStabilizing, Signals: signals}
+		belowTarget = clearedBelowTarget() // 需求回到目标以上：低谷不成立，计时清零
+	} else {
+		msg, ok, update := e.stabilizeScaleDown(app, now)
+		belowTarget = update
+		if !ok {
+			return Decision{Action: ActionNone, FromReplicas: current, ToReplicas: current,
+				Reason: msg, ReasonCode: ReasonStabilizing, Signals: signals,
+				BelowTarget: belowTarget}
+		}
 	}
 
 	// 冷却窗口：冷却期内拒绝缩容（扩容放行）
-	if e.inCooldown(app) && desired < current {
+	if e.inCooldown(app, now) && desired < current {
 		return Decision{Action: ActionNone, FromReplicas: current, ToReplicas: current,
-			Reason: "scale down blocked by cooldown window", ReasonCode: ReasonCooldown, Signals: signals}
+			Reason: "scale down blocked by cooldown window", ReasonCode: ReasonCooldown,
+			Signals: signals, BelowTarget: belowTarget}
 	}
 
 	// 缩容渐进：单次最多减 scaleDownStepPercent%（默认 20%），且至少减 1 个。
@@ -205,36 +238,36 @@ func (e *Engine) Decide(ctx context.Context, app *appsv1alpha1.App, nowFn func()
 		action, reason, code = ActionScaleDown, "load below targets", ReasonScaleDown
 	}
 	return Decision{Action: action, FromReplicas: current, ToReplicas: desired,
-		Reason: reason, ReasonCode: code, Signals: signals}
+		Reason: reason, ReasonCode: code, Signals: signals, BelowTarget: belowTarget}
 }
 
 // stabilizeScaleDown 判断"持续低于目标"是否已经够久，允许缩容。
-// 返回 (给人看的原因, 是否放行)。副作用：必要时把计时起点写进 status（由控制器持久化）。
-func (e *Engine) stabilizeScaleDown(app *appsv1alpha1.App) (string, bool) {
+// 返回 (给人看的原因, 是否放行, 对计时起点的写入建议)。
+// 无副作用：不写 app.Status，由调用方把建议带进 Decision、控制器落盘。
+func (e *Engine) stabilizeScaleDown(app *appsv1alpha1.App, now time.Time) (string, bool, BelowTargetUpdate) {
 	window := time.Duration(app.Spec.Scaling.StabilizationSeconds()) * time.Second
 	if window <= 0 {
-		return "", true // 显式关闭
+		return "", true, BelowTargetUpdate{} // 显式关闭，计时无意义
 	}
-	now := e.nowFunc()
 	if app.Status.BelowTargetSince == nil {
 		t := metav1.NewTime(now)
-		app.Status.BelowTargetSince = &t
-		return fmt.Sprintf("scale-down candidate: signals must stay below targets for %s", window), false
+		return fmt.Sprintf("scale-down candidate: signals must stay below targets for %s", window),
+			false, BelowTargetUpdate{Set: true, Value: &t}
 	}
 	elapsed := now.Sub(app.Status.BelowTargetSince.Time)
 	if elapsed < window {
 		return fmt.Sprintf("scale down blocked by stabilization window (%s of %s)",
-			elapsed.Truncate(time.Second), window), false
+			elapsed.Truncate(time.Second), window), false, BelowTargetUpdate{}
 	}
-	return "", true
+	return "", true, BelowTargetUpdate{}
 }
 
-func (e *Engine) inCooldown(app *appsv1alpha1.App) bool {
+func (e *Engine) inCooldown(app *appsv1alpha1.App, now time.Time) bool {
 	if app.Status.LastScalingAt == nil {
 		return false
 	}
 	cooldown := time.Duration(app.Spec.Scaling.CooldownSeconds) * time.Second
-	return e.nowFunc().Sub(app.Status.LastScalingAt.Time) < cooldown
+	return now.Sub(app.Status.LastScalingAt.Time) < cooldown
 }
 
 // Apply 把决策落回 CR：改 spec.replicas，让 Reconcile 自然收敛到 Deployment。
