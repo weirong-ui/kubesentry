@@ -183,7 +183,7 @@ docs/                STATUS 账本、demo 实录、压测报告、系列文章�
 ```bash
 make run                 # 本地跑（连当前 kubeconfig）
 make manifests generate  # 重新生成 CRD/RBAC/DeepCopy
-go test ./... -cover     # 单元测试（113 用例）
+go test ./... -cover     # 单元测试（139 用例）
 ```
 
 ## Roadmap

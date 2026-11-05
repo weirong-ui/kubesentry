@@ -24,9 +24,9 @@ KubeStasis 的目标：**用 Operator 模式把"伸缩决策"和"故障自愈"�
 - G1：一个 `App` CRD 描述应用全生命周期：镜像、副本、伸缩策略、健康策略
 - G2：多信号伸缩决策引擎，带冷却窗口与迟滞抑制
 - G3：分级自愈：L1 扩容 → L2 摘除重建 → L3 回滚，动作全部以 Kubernetes Event 留痕
-- G4：金丝雀发布观察窗口，错误率超阈值自动回滚
+- G4：金丝雀**观察窗口**，错误率超阈值自动回滚（不做按权重引流——那不是流量治理，灰度粒度粗，见 §2 非目标）
 - G5：Admission Webhook 做校验与跨字段默认（`replicas` 跟随 `minReplicas`）；安全默认值注入见 §6，**计划中**
-- G6：GitHub Actions 全自动 CI（gofmt / vet / build / 单测 + kind e2e + 镜像签名）；envtest 见 §5，**计划中**
+- G6：GitHub Actions 全自动 CI（gofmt / vet / build / 单测 + envtest + kind e2e + 镜像签名）；envtest 见 §5，已落地
 
 **非目标**
 - 不替代 HPA/KEDA（可以共存，KubeStasis 管自愈，HPA 管容量）
@@ -202,7 +202,7 @@ Apply 写 spec 会立刻触发下一轮 Reconcile，而 informer cache 里可能
 | 层级 | 工具 | 覆盖内容 | 现状 |
 |---|---|---|---|
 | 单元 | go test + fake client | Scaler 决策表、Healer 状态机、Webhook 校验规则、mini-Informer、指标埋点 | ✅ 139 用例 |
-| 集成 | envtest（真实 apiserver + etcd） | Reconcile 全流程、Finalizer、Status 更新 | ⬜ 计划中——目前靠 kind e2e 顶 |
+| 集成 | envtest（真实 apiserver + etcd） | Reconcile 全流程、Finalizer、Status 更新、副本漂移拉回 | ✅ 4 条链路（CI `envtest` job） |
 | 混沌 | kind 集群脚本（CI） | 杀 Pod / CrashLoop 版本发布 / 金丝雀错误率，验证自愈与回滚 | ✅ 覆盖 P0/P2/P3 |
 
 ## 6. 安全设计（呼应 CKS）
@@ -227,6 +227,6 @@ Apply 写 spec 会立刻触发下一轮 Reconcile，而 informer cache 里可能
 | 脚手架 | kubebuilder v4 | 社区标准，CRD/Webhook/配置一键生成 |
 | Controller | controller-runtime | 事实标准，对接 Informer/WorkQueue |
 | 指标 | Prometheus HTTP API | 生态最广，查询简单 |
-| 测试 | go test + kind e2e | 单测跑决策表，控制循环回归放真集群（envtest 计划中） |
+| 测试 | go test + envtest + kind e2e | 单测跑决策表，控制循环回归有 envtest 与真集群两层 |
 | CI | GitHub Actions | gofmt + vet + build + test / kind e2e / 多架构镜像 + cosign 签名 |
 | 部署 | kustomize + Helm Chart 双轨 | 开发/CI 用 kustomize overlay，交付用 `charts/kubestasis`（crds/ 仅首装创建） |

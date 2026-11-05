@@ -43,6 +43,9 @@ test: manifests generate fmt ## 单元测试（envtest 无二进制时自动跳�
 	$(GO) test ./... -coverprofile=coverage.out -covermode=atomic
 	$(GO) tool cover -func=coverage.out | tail -1
 
+docs-check: ## 文档一致性（用例数单一事实源 / 已完成项不得仍标计划中）
+	python3 hack/doc_consistency.py
+
 test-envtest: ## 控制循环级集成测试（需 setup-envtest 下载的二进制）
 	$(GO) run sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.19 use 1.31.x -p path > .envtest-path
 	KUBESTASIS_REQUIRE_ENVTEST=1 KUBEBUILDER_ASSETS=$$(cat .envtest-path) \

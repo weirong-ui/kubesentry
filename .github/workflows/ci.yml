@@ -29,6 +29,10 @@ jobs:
             test -f "$img" || { echo "README 引用的图片不存在: $img"; exit 1; }
             echo "ok: $img"
           done
+      - name: 文档一致性（用例数单一事实源 / 已完成项不得仍标计划中）
+        # 起因：README 徽章 139、同文件开发节 113、DESIGN 里 envtest 还写"计划中"。
+        # 一个主打"文档即账本"的项目，账本自己对不上是硬伤；人工核对漏过一次，改机器查。
+        run: python3 hack/doc_consistency.py
 
   # 校验代码可编译、可格式、可测试。
   # 注意：条件判断必须写在 step 级——写在 job 级 if 里的非法表达式会让整份 workflow 校验失败，
