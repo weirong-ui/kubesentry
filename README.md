@@ -5,7 +5,7 @@
 **定位**：不是"HPA 替代品"，也不打算被生产采用。它是一个把"看指标伸缩 + 看故障自愈 + 准入期兜住错误配置"放进同一个控制回路的**实现研究**，每条能力都附可复算的实测证据与失败记录——而不是一张愿望清单。什么时候该用、什么时候不该用，见下一节。
 
 [![CI](https://github.com/weirong-ui/kubestasis/actions/workflows/ci.yml/badge.svg)](https://github.com/weirong-ui/kubestasis/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-137%20cases-brightgreen)](docs/STATUS.md)
+[![Tests](https://img.shields.io/badge/tests-139%20cases-brightgreen)](docs/STATUS.md)
 [![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
@@ -19,7 +19,7 @@
 | 可观测性 | [Grafana 面板实测截图](deploy/monitoring/README.md)——4 行 16 个面板，含一次真实的 2→1→2（稳定窗口挡缩容、到点缩、再扩）；同目录还有录制规则与"伸缩引擎休眠"告警 |
 | 全部能力/限制/踩坑 | [docs/STATUS.md](docs/STATUS.md)（唯一可信账本，含"已知不解决的问题"） |
 
-CI 六道门：`docs`（链接有效性）/ `build`（gofmt + vet + 137 用例）/ `envtest`（真实 apiserver 的控制循环回归，4 条链路）/ `chart`（helm lint + 双形态渲染 + CRD 逐字节 diff）/ `e2e`（kind 真集群跑通伸缩、自愈、Webhook 负向用例）/ `image`（多架构 + cosign 签名）。
+CI 六道门：`docs`（链接有效性）/ `build`（gofmt + vet + 139 用例）/ `envtest`（真实 apiserver 的控制循环回归，4 条链路）/ `chart`（helm lint + 双形态渲染 + CRD 逐字节 diff）/ `e2e`（kind 真集群跑通伸缩、自愈、Webhook 负向用例）/ `image`（多架构 + cosign 签名）。
 
 ## 什么时候该用，什么时候不该用
 

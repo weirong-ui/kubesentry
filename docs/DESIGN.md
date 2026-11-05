@@ -201,7 +201,7 @@ Apply 写 spec 会立刻触发下一轮 Reconcile，而 informer cache 里可能
 
 | 层级 | 工具 | 覆盖内容 | 现状 |
 |---|---|---|---|
-| 单元 | go test + fake client | Scaler 决策表、Healer 状态机、Webhook 校验规则、mini-Informer、指标埋点 | ✅ 137 用例 |
+| 单元 | go test + fake client | Scaler 决策表、Healer 状态机、Webhook 校验规则、mini-Informer、指标埋点 | ✅ 139 用例 |
 | 集成 | envtest（真实 apiserver + etcd） | Reconcile 全流程、Finalizer、Status 更新 | ⬜ 计划中——目前靠 kind e2e 顶 |
 | 混沌 | kind 集群脚本（CI） | 杀 Pod / CrashLoop 版本发布 / 金丝雀错误率，验证自愈与回滚 | ✅ 覆盖 P0/P2/P3 |
 
