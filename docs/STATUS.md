@@ -15,7 +15,7 @@
 **伸缩对比**：同镜像、同资源、同流量时间线下与原生 HPA 的对照实验，见 [docs/benchmark/hpa-vs-kubestasis.md](benchmark/hpa-vs-kubestasis.md)（原始采样 CSV 入库，可复算）。
 **11-04 晚补的四件"可交付性"短板**：托管 Deployment 的就绪/存活探针（省略时默认注入 TCP 就绪探针，`Available` 不再是"进程起来了"的乐观信号）、缩容稳定窗口（压测 run5 抓到的误缩容缺口闭合）、Helm Chart（`helm upgrade --install` 全链路真集群验证）、伸缩决策指标导出（`kubestasis_scaling_decisions_total` 等 4 个指标，"为什么没扩"变成一条 PromQL）。
 
-## 二、体检与验证结果（2026-11-02 实测，11-03 晚更新）
+## 二、体检与验证结果（2026-11-02 实测，11-04 深夜更新）
 
 | 检查项 | 结果 | 实测输出 |
 |---|---|---|
@@ -59,7 +59,7 @@
 | 就绪/存活探针 | ✅ 已实现 | `spec.readiness` / `spec.liveness`（`HTTPGet`/`TCPSocket`，path/period/timeout/initialDelay/failureThreshold 可配）。**readiness 省略时默认注入 TCPSocket 探针（端口取 spec.port）**——托管应用默认具备"端口能连上才算就绪"的语义；liveness 只在显式声明时注入（存活探针杀进程的代价比就绪探针高，不敢默认猜）。webhook 校验 HTTP path 必须以 `/` 开头、TCP 配 path 只警告不阻断。真集群验证：显式 HTTPGet 注入正确、Pod Ready、无 Unhealthy 事件 |
 | 缩容稳定窗口 | ✅ 已实现 | `scaling.scaleDownStabilizationSeconds`（默认 60s，0 关闭）+ `status.belowTargetSince`：信号需持续低于目标满窗口才允许缩容，任一信号高于目标的采样立即重置计时。补的是压测 run5 抓到的误缩容缺口（突发起点 4→3→13s 又扩回 5）。真集群验证：3 副本零流量下，窗口期内纹丝不动，到点后**单步** 3→2（不连跳——status 先于 spec 写入的竞态修复同时被验证） |
 | 伸缩决策指标导出 | ✅ 已实现 | `internal/metrics/`：`kubestasis_scaling_decisions_total{namespace,app,action,reason}`（reason 用固定枚举 ReasonCode，不是自由文本——防 label 基数爆炸）+ `desired/current/signal_replicas` 三个 gauge；App 删除时 `Forget` 清理防残留。真集群验证：4 个指标全部出现在 `/metrics` 端点，含一条 `ScaleDown` 决策记录 |
-| Helm Chart | ✅ 已实现 | `charts/kubestasis`（0.1.0）：CRD 放 `crds/`、SA/RBAC/Deployment/metrics Service/webhook 全模板化；webhook 证书二选一——默认 `helm genSelfSignedCert` 渲染期生成（零外部依赖），或 `--set webhook.certManager.enabled=true` 走 cert-manager；`helm lint` + `template` + server-side dry-run + 真集群 `upgrade --install`（p9 镜像）+ 滚动升级全部验证。注意事项与 values 说明见 [charts/kubestasis/README.md](../charts/kubestasis/README.md) |
+| Helm Chart | ✅ 已实现 | `charts/kubestasis`（0.1.1）：CRD 放 `crds/`、SA/RBAC/Deployment/metrics Service/webhook 全模板化；webhook 证书二选一——默认 `helm genSelfSignedCert` 渲染期生成（零外部依赖），或 `--set webhook.certManager.enabled=true` 走 cert-manager；`helm lint` + `template` + server-side dry-run + 真集群 `upgrade --install`（p9 镜像）+ 滚动升级全部验证。注意事项与 values 说明见 [charts/kubestasis/README.md](../charts/kubestasis/README.md) |
 | 单元测试 | ✅ 137 用例 | scaler 59 + controller 16 + healer 24 + webhook 24 + miniinformer 11 + metrics 3（用 `--- PASS` 行数按包实测，和 §二 同一口径） |
 | envtest 集成测试 | ✅ 4 条链路 | `test/envtest/`：进程内起真实 etcd + apiserver，验 watch → enqueue → Reconcile → status 回写 的闭环——创建（Deployment/Service/ownerRef/finalizer/DesiredReplicas）、就绪回写（代写 Deployment.status → App Available=True）、删除放闸、副本漂移拉回。CI 有独立 `envtest` job；本地无二进制时自动 Skip（`KUBESTASIS_REQUIRE_ENVTEST=1` 强制失败） |
 | Grafana 面板 | ✅ 已实现 | `deploy/monitoring/grafana/`：4 行 16 格（概览 → 决策 → 信号与窗口 → 控制器健康/运行时），变量按 App 命名空间/App 过滤；`kustomization.yaml` 打成带 `grafana_dashboard: "1"` 的 ConfigMap 供 sidecar 自动发现。**真集群验证**：kind + 真 Prometheus 抓控制器 metrics，跑出一次完整的 2→1（稳定窗口挡了 5 轮 stabilizing）→2；截图 [docs/assets/grafana-dashboard.png](assets/grafana-dashboard.png)，读图指南见 [deploy/monitoring/README.md](../deploy/monitoring/README.md) |
@@ -124,13 +124,13 @@
 | **多集群 / 跨集群联邦** | 涉及跨集群服务发现、状态同步、冲突消解，是独立课题；单集群链路还没被真实流量打磨过 | 至少要先有 metrics 聚合层与全局调度器；基于 Karmada/ClusterAPI 做上层编排比自研更现实 |
 | **无侵入指标采集（eBPF）** | 需要内核态开发、节点特权与版本兼容矩阵；收益是省掉应用埋点，但本项目假定应用暴露 Prometheus 指标 | 用 Pixie/eBPF exporter 作为 MetricsSource 的另一种实现即可，不必自研 |
 | **真正的流量切分式金丝雀**（按权重引流） | 现在做的是"发布后观察错误率，超阈值回滚"——观察真实流量，不做权重控制。名字叫 canary，但不是流量治理 | 引入 Gateway API / Istio 的权重路由；Webhook 侧还要管 VirtualService 生命周期 |
-| **控制面高可用** | 单副本 manager + leader election 未开启；个人项目的集群规模用不上，开了反而增加演示复杂度 | 打开 `--leader-elect`、副本数 ≥2、配合 PDB 与反亲和 |
-| **决策可观测性的最后一公里**（Grafana 面板） | 指标与 recording rules 已就位（`kubestasis_scaling_*` 四个指标 + `deploy/monitoring/recording-rules.yaml`），但没做现成的 Grafana dashboard JSON | 一个 dashboard + `dashboards/` 入库，用户 import 即用 |
-| **envtest 级别的控制循环回归** | 现在是 fake client 单测（快、但不跑真实 apiserver 默认值/校验）+ kind e2e（真、但慢且只覆盖三条链路）；中间层确实缺 | 引入 envtest（需要 etcd/kube-apiserver 二进制），把 CRD 默认值、webhook 联动、status 子资源这些"只有真 apiserver 才有的行为"纳入回归 |
+| **控制面高可用** | chart 已开 `leaderElection`，但 `replicaCount` 默认 1——**双副本下的选主接管、伸缩不重复执行从未实测**。个人项目的集群规模用不上，开了反而增加演示复杂度 | 副本数 ≥2 真集群验证切换；配合 PDB 与反亲和 |
+| ~~决策可观测性的最后一公里（Grafana 面板）~~ | **已解决**（11-04 深夜，`92c277c`，见 §三）。残余：面板只做单集群单数据源，没有多集群聚合 | —— |
+| ~~envtest 级别的控制循环回归~~ | **已解决**（11-04 深夜，`52b3c70`，见 §三）。残余：envtest 没覆盖 webhook 联动与 status 子资源的并发写竞争 | —— |
 | **升级/迁移路径**（CRD 版本演进、v1alpha1 → v1beta1） | 还没有真实用户，谈 conversion webhook 为时过早 | 定义 v1beta1 + conversion webhook + 存储版本迁移演练 |
 | **安全加固的完整闭环**（NetworkPolicy、seccomp、RBAC 最小化审计） | 已有非 root、只读根文件系统、镜像签名校验；但没有逐条做 CIS Benchmark 对照 | 用 kube-bench / Kubescape 扫一遍，按报告逐项修 |
-| **压测结论的普适性** | 见 [压测报告](benchmark/hpa-vs-kubestasis.md) 的"口径限定"一节：单节点、单应用、CPU 忙等模拟，结论只在同口径下成立 | 多节点、多应用混部、真实业务流量回放 |
-| **缩容稳定窗口的默认值没经过大样本校准** | 窗口机制已实现（`scaleDownStabilizationSeconds` 默认 60s + `belowTargetSince`），但 60s 这个数只在单节点单应用口径下验证过——它挡住了 run5 那种"突发起点"误缩容，代价是纯空闲场景回到 1 副本再慢 60s（压测报告里"回到 1 慢 65s"的一部分就是它） | 真实流量回放下对比 0/60/300s 三档；如果长期看不出差异，把默认改回 0 并在文档里写明取舍 |
+| **压测结论的普适性** | 见 [压测报告](benchmark/hpa-vs-kubestasis.md) 的"口径限定"一节：单节点、单应用、CPU 忙等模拟，且**方差未补齐**（HPA 侧三轮准重复 σ≈8s，见 [variance-precheck.md](benchmark/variance-precheck.md)），结论只在同口径下成立 | 先做串行 + 多轮重复 + G0/G2 对照（压测扩项）；再谈多节点、多应用混部、真实业务流量回放 |
+| **缩容稳定窗口的默认值没经过大样本校准** | 窗口机制已实现（`scaleDownStabilizationSeconds` 默认 60s + `belowTargetSince`），但 60s 这个数只在单节点单应用口径下验证过——它挡住了 run5 那种"突发起点"误缩容。若现在重跑，回到 1 副本会比报告里的 65s 再慢约一个窗口（约 60s，稳定窗口的代价） | 真实流量回放下对比 0/60/300s 三档；如果长期看不出差异，把默认改回 0 并在文档里写明取舍 |
 
 
 
@@ -138,10 +138,11 @@
 
 1. ~~P1 指标源~~ / ~~P2 自愈~~ / ~~P3 Webhook~~ / ~~P4 mini-Informer~~ / ~~压测对比~~：**全部完成**（2026-11-03 ~ 11-04）
 2. ~~Helm Chart~~ / ~~决策指标导出~~ / ~~就绪探针~~ / ~~缩容稳定窗口~~：**11-04 晚完成**
-3. 剩下的硬骨头：
-   - envtest 集成测试（控制循环级回归，补 fake client 与 kind e2e 之间的断层）
-   - Grafana 面板入库（指标和 recording rules 已就位）
-4. 可选增强（不承诺）：Kyverno 策略进 CI kind 集群实测、CRD v1beta1 + conversion
+3. ~~envtest 集成测试~~ / ~~Grafana 面板~~：**11-04 深夜完成**
+4. 剩下的硬骨头：
+   - **压测扩项**（串行 + 多轮重复 + G0/G2 对照，让核心结论可分辨于噪声——动机与预核算见 [variance-precheck.md](benchmark/variance-precheck.md)）
+   - HA 双副本切换验证（§七"控制面高可用"残余）
+5. 可选增强（不承诺）：Kyverno 策略进 CI kind 集群实测、CRD v1beta1 + conversion
 
 ## 九、每日勾选
 
@@ -156,6 +157,7 @@
 | 2026-11-04 晚 | 就绪/存活探针 + 缩容稳定窗口 + Helm Chart + 决策指标导出 | 113 → 137 用例；`Available` 语义修正（有真探针了）；run5 误缩容缺口闭合；`helm upgrade --install` 真集群验证（含滚动升级 p8→p9）；踩到"kustomize 与 Helm 双装导致两套 webhook 打架"的坑（见下） |
 | 2026-11-04 深夜 | envtest 控制循环回归落地（原计划第 3 周，提前完成） | 新增 `test/envtest/` 4 条链路 + CI 独立 `envtest` job（5 → 6 job）；P0 最后一个未勾项清零 |
 | 2026-11-04 深夜 | Grafana 面板 + 录制规则两处真 bug 修复 | 面板 4 行 16 格真集群截出入库；修 `alerts:` 写在 rules 数组外（PrometheusRule schema 会静默剪掉，告警从未生效）、比例规则无序列时显示 No data（改零填充）；chart ServiceMonitor 补 `honorLabels: true`（否则决策指标的 App 命名空间被目标标签覆盖，面板按 App 过滤全空） |
+| 2026-11-05 | 压测报告降级口径 + 方差预检 + 账本回删 + v0.1.0 tag | 报告加版本声明（数据采集于稳定窗口实现前）；"快 1.7 倍"降级为单次观察（HPA 侧三轮准重复 σ≈8.2s，组间差仅 2.1σ），副本-分钟（≈6σ）提为主结论；`variance-precheck.md` + 复算脚本入库；STATUS §七/§八 回删已解决项（Grafana/envtest）、修正两处因果与日期；打 `v0.1.0` |
 
 ### 11.03 晚新踩的坑（已修，写进记忆）
 
