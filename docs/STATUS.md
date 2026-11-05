@@ -47,7 +47,7 @@
 | 迟滞带 + 缩容渐进算法 | ✅ 已实现 | 纯函数逻辑完整（含"缩回 minReplicas 不受迟滞约束""`ceil(0.2×current)` 缩不动"两个坑） |
 | 冷却窗口 | ✅ 已实现 | `LastScalingAt` 在 decision≠None 时写入；逻辑已被单测覆盖（冷却拦缩容、放行扩容、过期放行） |
 | Prometheus 多信号伸缩 | ✅ 已实现 | `internal/scaler/prometheus.go`：QPS（`rate` 换算副本）、P99（`histogram_quantile` 按比例扩）、错误率（超阈值按比例扩，比例可配）；`--prometheus-url`/`--prometheus-window` 注入，不配则休眠。**真实指标源端到端验证**（2026-11-03：集群内真实 Prometheus v2.54.1 按 Pod 抓取 + demoapp 打流 500 QPS → 扩 1→5，停流后渐进缩 5→1，全程 Events 留痕，实录见 [docs/demo/01-scaling.md](demo/01-scaling.md)） |
-| AI 推理弹性信号 | ✅ 已实现 | 同一 `MetricsSource` 接口下的三个新信号：`QueueDepth`（队列深度换算副本，同 QPS 型）、`TTFT`（首 token 延迟超阈值按比例扩）、`KVCacheUsage`（KV cache 占用率超阈值按比例扩）；默认 vLLM 指标名，`WithQuery` 可换 SGLang/TGI。通用自愈平移到推理场景不重写项目 |
+| AI 推理弹性信号 | ✅ 已实现，⚠️ 未实测 | 同一 `MetricsSource` 接口下的三个新信号：`QueueDepth`（队列深度换算副本，同 QPS 型）、`TTFT`（首 token 延迟超阈值按比例扩）、`KVCacheUsage`（KV cache 占用率超阈值按比例扩）；默认 vLLM 指标名，`WithQuery` 可换 SGLang/TGI。通用自愈平移到推理场景不重写项目。**边界：只有单测覆盖查询构造与换算逻辑，没有在真实 vLLM 集群上跑过**——"用推理负载压一次"在 ROADMAP 里，尚欠实测 |
 | 故障识别（CrashLoop / OOM / 高频重启） | ✅ 已实现 | `Inspect` 按 Pod 标签列出实例，读 `containerStatuses[].state.waiting.reason` / `lastState.terminated.reason` / restartCount 兜底；有意忽略"别的 App 的 Pod"与"正在删除的 Pod"。**真集群验证**：crash 镜像发布后 ~2.5min 识别并动作 |
 | 分级自愈 L1→L2→L3 | ✅ 已实现 | L1 扩容 20%（受 maxReplicas 钳制）/ L2 删除不健康 Pod / L3 从 ReplicaSet 修订历史回滚镜像（改 App.spec，声明式收敛）。升级路径由 `status.lastHealLevel/lastHealAt` 驱动：冷却期内复发才升级；已到 L3 还在坏则进入观察。**真集群验证**：L2 摘除 → 复发 → 自动升 L3 → 回滚 → 2/2 恢复 |
 | 金丝雀观察 + 自动回滚 | ✅ 已实现 | 镜像变更写入 `status.lastImageChangeAt` 开窗；窗口内 `ErrSource.ErrorRate` 超阈值即回滚并关窗（防回滚死循环）。**真集群验证**：50% 错误率版本发布后 ~20s 自动回滚，`status.rollbackRevision=1` |

@@ -2,10 +2,10 @@
 
 基于 controller-runtime 的 Kubernetes Operator：用一个 `App` CR 管住应用的**伸缩、自愈、准入**三件事。
 
-**定位**：不是"HPA 替代品"，而是把"看指标伸缩 + 看故障自愈 + 准入期兜住错误配置"放进同一个控制回路，并对每条能力给出**可复现的实测证据**——而不是一张愿望清单。
+**定位**：不是"HPA 替代品"，也不打算被生产采用。它是一个把"看指标伸缩 + 看故障自愈 + 准入期兜住错误配置"放进同一个控制回路的**实现研究**，每条能力都附可复算的实测证据与失败记录——而不是一张愿望清单。什么时候该用、什么时候不该用，见下一节。
 
 [![CI](https://github.com/weirong-ui/kubestasis/actions/workflows/ci.yml/badge.svg)](https://github.com/weirong-ui/kubestasis/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-113%20cases-brightgreen)](docs/STATUS.md)
+[![Tests](https://img.shields.io/badge/tests-137%20cases-brightgreen)](docs/STATUS.md)
 [![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
@@ -15,11 +15,37 @@
 |---|---|
 | 按 QPS 伸缩 | [500 QPS 打流 → 1→5 副本；停流后渐进缩回 1](docs/demo/01-scaling.md)（集群内真 Prometheus 按 Pod 抓取） |
 | 分级自愈 | [crash 版本发布 → L2 摘除 → L3 按 ReplicaSet 回滚](docs/demo/02-self-healing.md)（CI 里有同链路回归断言） |
-| vs 原生 HPA | [同镜像、同资源、同流量时间线的压测对比](docs/benchmark/hpa-vs-kubestasis.md)（扩容响应 23s vs 40s；输的两项也写在里面；原始 CSV 可复算） |
+| vs 原生 HPA | [同镜像、同资源、同流量时间线的压测对比](docs/benchmark/hpa-vs-kubestasis.md)（副本-分钟 −12.5%，经三轮准重复校核约 6σ；扩容响应单次观察 23s vs 40s，方差未补齐、只作定性参考——[方差预检](docs/benchmark/variance-precheck.md)；输的两项也写在里面；原始 CSV 可复算） |
 | 可观测性 | [Grafana 面板实测截图](deploy/monitoring/README.md)——4 行 16 个面板，含一次真实的 2→1→2（稳定窗口挡缩容、到点缩、再扩）；同目录还有录制规则与"伸缩引擎休眠"告警 |
 | 全部能力/限制/踩坑 | [docs/STATUS.md](docs/STATUS.md)（唯一可信账本，含"已知不解决的问题"） |
 
 CI 六道门：`docs`（链接有效性）/ `build`（gofmt + vet + 137 用例）/ `envtest`（真实 apiserver 的控制循环回归，4 条链路）/ `chart`（helm lint + 双形态渲染 + CRD 逐字节 diff）/ `e2e`（kind 真集群跑通伸缩、自愈、Webhook 负向用例）/ `image`（多架构 + cosign 签名）。
+
+## 什么时候该用，什么时候不该用
+
+先回答最常被问的那个问题：**这里每一块能力都有成熟实现——伸缩是 KEDA/HPA，金丝雀回滚是 Argo Rollouts，准入是 Kyverno/Gatekeeper，垂直伸缩是 VPA。** KubeStasis 的差异只有一条：把它们收敛进同一个控制回路，并且每个决策都留下可核对的记录。这条差异值不值得，取决于你拿它做什么。
+
+**不要用它的情况**
+
+| 情况 | 为什么 | 该用什么 |
+|---|---|---|
+| 团队已经在用 KEDA + Argo Rollouts | 成熟项目的组合覆盖了这里绝大多数功能，有人维护、有社区、有升级路径；换成一个自研 Operator 只增加风险 | KEDA（伸缩）+ Argo Rollouts（金丝雀/回滚）+ Kyverno 或 Gatekeeper（准入） |
+| 核心生产链路、要 SLA | 单副本 manager（leaderElection 已开但双副本切换未验证）、准入 `failurePolicy=Fail` 且证书自签、Prometheus 单点、CRD 只有 v1alpha1 无 conversion——全是已知未闭环项，见 [STATUS §七](docs/STATUS.md) | 成熟方案 + 平台团队兜底 |
+| 垂直伸缩 / 有状态 / 多集群 | 明确不做，原因写在[设计权衡](#设计权衡) | VPA、对应领域的 Operator、Karmada |
+
+**它适合被看/被跑的情况**
+
+1. **想看清一个 Operator 的控制回路怎么才算写扎实**：六种信号如何取最紧急者、迟滞带为什么只挡缩容、缩容稳定窗口的状态为什么必须放 status 而不是内存、为什么 status 要先于 spec 写以规避 cache 竞态——每条都有代码注释、单测、以及一次真实翻车记录。
+2. **需要"决策可审计"的小规模场景**：每次评估（包括"评估了但没动"）都带固定 reason 枚举打点，配面板能直接回答"刚才为什么没缩"。
+
+**功能重叠对照（同一件事，两种做法）**
+
+| 能力 | 成熟实现 | KubeStasis 的做法与差异 | 代价 |
+|---|---|---|---|
+| 指标驱动伸缩 | KEDA / HPA + prometheus-adapter | 六种信号（QPS/RPS/CPU/队列深度/TTFT/KV cache）与自愈、准入共享同一个 Reconcile 与状态机 | 没有 KEDA 的 scaler 生态，也没有它的社区验证 |
+| 金丝雀与自动回滚 | Argo Rollouts | 只做"观察错误率超阈值回滚"，不做按权重引流 | 不是流量治理，灰度粒度粗 |
+| 准入策略 | Kyverno / Gatekeeper | 策略写死在 webhook 里（镜像 tag、replicas、探针） | 不可用 Rego/CEL 扩展，改策略要改代码 |
+| 决策可观测 | 各家都有指标，但通常只报结果 | 结果 + 未动作原因（固定枚举）+ 录制规则 + 现成面板 | 指标基数随 App 数线性增长，未做大规模验证 |
 
 ## 它长什么样
 
@@ -113,6 +139,9 @@ webhook 证书默认用渲染期自签（零外部依赖），也可切 cert-man
 ## 设计权衡
 
 这一节记录**为什么这样做、放弃了什么**——代码能看出"做了什么"，看不出"为什么不是另一种做法"。
+
+**为什么明知 KEDA / Argo Rollouts / Kyverno 都存在，还要写一个？**
+因为想验证一个具体假设：把伸缩、自愈、准入收敛进**同一个** Reconcile 与状态机，是否能在"决策可审计"和"少一套控制面"上换到真实收益。验证方式不是论证，是数据——压测报告里那句"信号红利不是实现优劣"就是必须先被证伪或证实的命题，所以下一步要做 KEDA 组对照（同查询、同目标、同时间轴），把"信号不同型"与"实现好坏"分开。如果结论是"不值得"，那也是一条有价值的失败记录；这个项目不承诺结论好看，只承诺可复算。
 
 **为什么用迟滞带 + 冷却窗口，而不是单一阈值？**
 单一阈值在阈值附近必然抖动：副本数一变，每 Pod 负载就落到阈值另一侧，于是来回扩缩。迟滞带（默认 10%）给"不动"留出死区，冷却窗口（默认 120s）拦住刚扩完就缩的反射式操作，缩容还限制单次步长（20%）。代价是收敛慢于理想值——这是用一点响应速度换稳定性的**主动选择**，不是实现不出来。
