@@ -56,6 +56,11 @@ jobs:
         run: go build ./...
       - name: go test
         run: go test ./... -coverprofile=coverage.out -covermode=atomic
+      - name: go test -race
+        # 数据竞争不崩溃、不报错，只在特定并发时序下悄悄算错数
+        # （实例：Decide() 曾有的 e.nowFunc = nowFn，当时只因默认并发=1 才没炸）。
+        # ubuntu runner 有 gcc；本机 Windows 没有——本地跑不了 ≠ 不用跑。
+        run: go test -race -count=1 ./internal/... ./pkg/...
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         continue-on-error: true
