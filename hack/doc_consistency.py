@@ -36,12 +36,24 @@ CLAIM = re.compile(
     r"|(\d+)\s*(?:个\s*)?用例"                  # 139 用例 / 139 个用例
     r"|(\d+)\s+cases"                            # 139 cases
 )
-ARROW_HISTORY = re.compile(r"\d+\s*(?:个\s*)?用例?\s*→|\d+\s*→\s*\d+")
+ARROW_HISTORY = re.compile(
+    r"\d+\s*(?:个\s*)?(?:测试)?用例\s*→\s*\d+"       # "113 用例 → 137"
+    r"|\d+\s*→\s*\d+\s*(?:个\s*)?(?:测试)?用例"       # "113 → 137 用例"
+)
+# 带日期的台账行（"| 2026-11-03 | P1 ... 31 个单测 ... |"）陈述的是那天的状态，
+# 和箭头演进同理，属于历史记录而非当前声明
+DATE_ROW = re.compile(r"^\|\s*\d{4}-\d{2}-\d{2}\s*\|")
 
 
 def is_history(line: str) -> bool:
-    """历史演进行豁免：'103 → 113 用例'、'113 → 137 用例'。"""
-    return bool(ARROW_HISTORY.search(line)) or "→" in line
+    """历史演进行豁免：'103 → 113 用例'、'113 → 137 用例'、日期台账行。
+
+    2026-11-06 外部评审：这里原来是 `or "→" in line`，任何带箭头的行整行豁免，
+    像 "139 用例（真集群 1→5→1 验证）" 这种当前时态声明会被静默跳过。
+    现在箭头必须紧邻用例计数，1→5 之类的普通箭头不再构成豁免。
+    """
+    stripped = line.strip()
+    return bool(ARROW_HISTORY.search(line)) or bool(DATE_ROW.match(stripped))
 
 
 def collect_counts() -> tuple[int | None, list[tuple[str, int, int, str]]]:
