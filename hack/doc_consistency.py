@@ -111,6 +111,35 @@ for artifact, doc, pattern in REALITY:
                 f"{doc}:{i} 仍称未完成，但 {artifact} 已存在 —— {line.strip()[:100]}"
             )
 
+# ---------- 3. 账本表里的"归档"必须对得上文件 ----------
+# 起因（2026-11-06 外部评审）：报告 §3 开头写"每轮的废数据都归档"，同节表格
+# run2 却写"未归档"，目录里也只有 3 份废 CSV；README 又把这句话抄成"五轮废
+# 数据的归档"。这类事实不需要等评审来抓——表里给了链接就必须有文件，写了
+# "未归档"就不能给链接，机器判得比人准。
+
+BENCH_DOC = ROOT / "docs/benchmark/hpa-vs-kubestasis.md"
+LINK = re.compile(r"\]\(([^)]+)\)")
+if BENCH_DOC.exists():
+    for i, line in enumerate(BENCH_DOC.read_text(encoding="utf-8").splitlines(), 1):
+        s = line.strip()
+        if not s.startswith("| run"):
+            continue
+        cells = [c.strip() for c in s.strip("|").split("|")]
+        if len(cells) < 4:
+            continue
+        run, archive = cells[0], cells[-1]
+        m = LINK.search(archive)
+        if "未归档" in archive:
+            if m:
+                errors.append(f"{rel(BENCH_DOC)}:{i} {run} 标\"未归档\"却给了链接")
+            continue
+        if not m:
+            errors.append(f"{rel(BENCH_DOC)}:{i} {run} 声称有归档但没给链接")
+            continue
+        target = BENCH_DOC.parent / m.group(1)
+        if not target.exists():
+            errors.append(f"{rel(BENCH_DOC)}:{i} {run} 归档链接指向不存在的文件：{m.group(1)}")
+
 if errors:
     print("文档一致性检查失败：")
     for e in errors:
